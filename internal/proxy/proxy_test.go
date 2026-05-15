@@ -30,4 +30,3 @@ func TestInitiatorUnknownDefaultsUser(t *testing.T) {
 		}
 	}
 }
-

@@ -17,4 +17,3 @@ func TestCodexAppModelsKeepsOpenAIResponsesModels(t *testing.T) {
 		t.Fatalf("unexpected model %v", got[0]["id"])
 	}
 }
-

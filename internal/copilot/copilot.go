@@ -282,4 +282,3 @@ func ReasoningEfforts(model Model) []string {
 	}
 	return nil
 }
-

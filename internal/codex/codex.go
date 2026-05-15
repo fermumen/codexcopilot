@@ -317,4 +317,3 @@ func LaunchApp() error {
 		return errors.New("Codex App automatic launch is currently supported on macOS and Windows only")
 	}
 }
-

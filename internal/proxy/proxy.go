@@ -274,4 +274,3 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 func DumpRequest(r *http.Request) ([]byte, error) {
 	return httputil.DumpRequest(r, true)
 }
-

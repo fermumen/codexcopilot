@@ -56,4 +56,3 @@ func Default() Paths {
 		BackupDir:    filepath.Join(stateDir, "backup"),
 	}
 }
-
