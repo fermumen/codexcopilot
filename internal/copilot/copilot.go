@@ -13,6 +13,8 @@ import (
 )
 
 var DefaultModelHints = []string{
+	"gpt-5.4-codex",
+	"gpt-5.4",
 	"gpt-5.3-codex",
 	"gpt-5.2-codex",
 	"gpt-5.1-codex",
@@ -264,6 +266,7 @@ func SupportsTools(model Model) bool {
 }
 
 func ReasoningEfforts(model Model) []string {
+	id := strings.ToLower(stringValue(model, "id"))
 	if capabilities, ok := model["capabilities"].(map[string]any); ok {
 		if supports, ok := capabilities["supports"].(map[string]any); ok {
 			if efforts, ok := supports["reasoning_effort"].([]any); ok {
@@ -276,9 +279,19 @@ func ReasoningEfforts(model Model) []string {
 				return out
 			}
 			if supports["reasoning"] == true {
-				return []string{"low", "medium", "high"}
+				return defaultReasoningEfforts(id)
 			}
 		}
 	}
+	if strings.HasPrefix(id, "gpt-5") || strings.HasPrefix(id, "o") {
+		return defaultReasoningEfforts(id)
+	}
 	return nil
+}
+
+func defaultReasoningEfforts(id string) []string {
+	if strings.HasPrefix(id, "gpt-5.4") {
+		return []string{"low", "medium", "high", "xhigh"}
+	}
+	return []string{"low", "medium", "high"}
 }

@@ -17,3 +17,31 @@ func TestCodexAppModelsKeepsOpenAIResponsesModels(t *testing.T) {
 		t.Fatalf("unexpected model %v", got[0]["id"])
 	}
 }
+
+func TestReasoningEffortsPreservesExplicitXHigh(t *testing.T) {
+	model := Model{
+		"id": "gpt-5.4",
+		"capabilities": map[string]any{
+			"supports": map[string]any{
+				"reasoning_effort": []any{"low", "medium", "high", "xhigh"},
+			},
+		},
+	}
+	got := ReasoningEfforts(model)
+	if len(got) != 4 || got[3] != "xhigh" {
+		t.Fatalf("expected explicit xhigh support, got %#v", got)
+	}
+}
+
+func TestReasoningEffortsAddsXHighFallbackForGPT54(t *testing.T) {
+	model := Model{
+		"id": "gpt-5.4",
+		"capabilities": map[string]any{
+			"supports": map[string]any{"reasoning": true},
+		},
+	}
+	got := ReasoningEfforts(model)
+	if len(got) != 4 || got[3] != "xhigh" {
+		t.Fatalf("expected xhigh fallback for gpt-5.4, got %#v", got)
+	}
+}

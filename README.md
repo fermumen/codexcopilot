@@ -286,6 +286,8 @@ Then it keeps models that:
 If no model is specified, it prefers:
 
 ```text
+gpt-5.4-codex
+gpt-5.4
 gpt-5.3-codex
 gpt-5.2-codex
 gpt-5.1-codex
@@ -295,6 +297,23 @@ gpt-5
 ```
 
 Then it falls back to the first usable Copilot model returned by the API.
+
+## Reasoning Effort
+
+Reasoning controls are driven by the generated Codex model catalog. For each model, the launcher writes:
+
+```json
+"default_reasoning_level": "medium",
+"supported_reasoning_levels": ["low", "medium", "high", "xhigh"]
+```
+
+The exact values come from Copilot model metadata when available:
+
+```text
+capabilities.supports.reasoning_effort
+```
+
+If Copilot only reports generic reasoning support, the launcher falls back to `low`, `medium`, and `high`. For `gpt-5.4*` model ids, it includes `xhigh` as well so Codex App can expose the extra effort level.
 
 ## Build and Test
 
