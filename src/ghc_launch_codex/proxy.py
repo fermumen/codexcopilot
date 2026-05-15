@@ -27,6 +27,9 @@ HOP_BY_HOP_HEADERS = {
 }
 
 
+SYNTHETIC_ATTACHMENT_PROMPT = "The user attached an image."
+
+
 def _has_image(value: Any) -> bool:
     if isinstance(value, dict):
         kind = value.get("type")
@@ -38,6 +41,22 @@ def _has_image(value: Any) -> bool:
     return False
 
 
+def _is_synthetic_attachment_message(message: Any) -> bool:
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return False
+    content = message.get("content")
+    if isinstance(content, str):
+        return content == SYNTHETIC_ATTACHMENT_PROMPT
+    if not isinstance(content, list):
+        return False
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") in {"text", "input_text"} and part.get("text") == SYNTHETIC_ATTACHMENT_PROMPT:
+            return True
+    return False
+
+
 def _body_has_image(body: bytes) -> bool:
     try:
         return _has_image(json.loads(body.decode("utf-8")))
@@ -45,17 +64,41 @@ def _body_has_image(body: bytes) -> bool:
         return False
 
 
-def _initiator(body: bytes) -> str:
+def _messages_initiator(messages: Any) -> str:
+    if not isinstance(messages, list) or not messages:
+        return "user"
+    last = messages[-1]
+    if not isinstance(last, dict):
+        return "agent"
+    if _is_synthetic_attachment_message(last):
+        return "agent"
+    return "user" if last.get("role") == "user" else "agent"
+
+
+def _responses_initiator(payload: dict[str, Any]) -> str:
+    input_items = payload.get("input")
+    if not isinstance(input_items, list) or not input_items:
+        return "user"
+    last = input_items[-1]
+    if not isinstance(last, dict):
+        return "agent"
+    if _is_synthetic_attachment_message(last):
+        return "agent"
+    return "user" if last.get("role") == "user" else "agent"
+
+
+def _initiator(body: bytes, path: str) -> str:
     try:
         payload = json.loads(body.decode("utf-8"))
     except Exception:
-        return "agent"
-    messages = payload.get("messages") or payload.get("input") or []
-    if isinstance(messages, list) and messages:
-        last = messages[-1]
-        if isinstance(last, dict) and last.get("role") == "user":
-            return "user"
-    return "agent"
+        return "user"
+    if not isinstance(payload, dict):
+        return "user"
+    if payload.get("input") is not None:
+        return _responses_initiator(payload)
+    if payload.get("messages") is not None:
+        return _messages_initiator(payload.get("messages"))
+    return "user"
 
 
 def _upstream_path(path: str) -> str:
@@ -113,11 +156,11 @@ class ProxyHandler(BaseHTTPRequestHandler):
         upstream = urllib.parse.urljoin(copilot_api_base(self.auth), _upstream_path(self.path))
         headers = copilot_headers(
             self.auth,
-            initiator=_initiator(body),
+            initiator=_initiator(body, self.path),
             vision=_body_has_image(body) if body else False,
         )
         for key, value in self.headers.items():
-            if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() != "authorization":
+            if key.lower() not in HOP_BY_HOP_HEADERS and key.lower() not in {"authorization", "x-initiator"}:
                 headers[key] = value
         req = urllib.request.Request(upstream, data=body, headers=headers, method="POST")
         try:
