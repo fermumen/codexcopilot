@@ -1,7 +1,6 @@
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
+bin/
 dist/
 build/
-
+*.exe
+*.test
+coverage.out

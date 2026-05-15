@@ -10,11 +10,19 @@ It mirrors the shape of Ollama's `ollama launch codex-app` integration:
 - exposes a local `/v1/responses` endpoint for Codex App
 - uses GitHub Copilot's device login flow and model API
 
-## Install for local development
+## Build
 
 ```bash
-python -m pip install -e .
+go build -o bin/githubcopilot ./cmd/githubcopilot
 ```
+
+The repo includes a convenience wrapper:
+
+```bash
+./githubcopilot --help
+```
+
+The wrapper runs `bin/githubcopilot` when present, otherwise it falls back to `go run ./cmd/githubcopilot` if Go is installed.
 
 ## Log in
 
