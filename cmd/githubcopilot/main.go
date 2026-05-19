@@ -24,7 +24,7 @@ const (
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: githubcopilot <auth|models|serve|launch> ...")
+	fmt.Fprintln(os.Stderr, "usage: githubcopilot <auth|models|serve|responses-server|launch> ...")
 	os.Exit(2)
 }
 
@@ -119,7 +119,7 @@ func commandModels(args []string) error {
 }
 
 func commandServe(args []string) error {
-	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	fs := flag.NewFlagSet("responses-server", flag.ExitOnError)
 	host := fs.String("host", defaultHost, "listen host")
 	port := fs.Int("port", defaultPort, "listen port")
 	clientID := fs.String("client-id", "", "GitHub OAuth client id")
@@ -130,8 +130,48 @@ func commandServe(args []string) error {
 		return err
 	}
 	addr := fmt.Sprintf("%s:%d", *host, *port)
-	fmt.Printf("GitHub Copilot proxy listening on http://%s/v1/\n", addr)
+	fmt.Printf("GitHub Copilot Responses proxy listening on http://%s/v1/\n", addr)
+	fmt.Println("This mode does not write Codex App config or launch Codex App.")
 	return proxy.New(a).ListenAndServe(addr)
+}
+
+func splitLaunchArgs(args []string) ([]string, []string) {
+	boolFlags := map[string]bool{
+		"config-only": true,
+		"no-launch":   true,
+		"server-only": true,
+		"restore":     true,
+	}
+	valueFlags := map[string]bool{
+		"model":          true,
+		"host":           true,
+		"port":           true,
+		"client-id":      true,
+		"enterprise-url": true,
+	}
+	var flagArgs []string
+	var targetArgs []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			targetArgs = append(targetArgs, arg)
+			continue
+		}
+		name := strings.TrimLeft(arg, "-")
+		if eq := strings.Index(name, "="); eq >= 0 {
+			name = name[:eq]
+		}
+		flagArgs = append(flagArgs, arg)
+		if valueFlags[name] && !strings.Contains(arg, "=") && i+1 < len(args) {
+			i++
+			flagArgs = append(flagArgs, args[i])
+			continue
+		}
+		if boolFlags[name] || strings.Contains(arg, "=") {
+			continue
+		}
+	}
+	return flagArgs, targetArgs
 }
 
 func commandLaunch(args []string) error {
@@ -141,11 +181,13 @@ func commandLaunch(args []string) error {
 	port := fs.Int("port", defaultPort, "listen port")
 	configOnly := fs.Bool("config-only", false, "write Codex App config without starting the proxy")
 	noLaunch := fs.Bool("no-launch", false, "do not launch Codex App")
+	serverOnly := fs.Bool("server-only", false, "start only the local Responses proxy without writing Codex App config or launching Codex App")
 	restore := fs.Bool("restore", false, "restore previous Codex App config")
 	clientID := fs.String("client-id", "", "GitHub OAuth client id")
 	enterpriseURL := fs.String("enterprise-url", "", "GitHub Enterprise URL or domain")
-	_ = fs.Parse(args)
-	target := strings.ToLower(strings.Join(fs.Args(), "-"))
+	flagArgs, targetArgs := splitLaunchArgs(args)
+	_ = fs.Parse(flagArgs)
+	target := strings.ToLower(strings.Join(targetArgs, "-"))
 	if target != "codex-app" {
 		return fmt.Errorf("unknown launch target %q, supported target: codex-app", target)
 	}
@@ -171,6 +213,12 @@ func commandLaunch(args []string) error {
 	a, err := ensureAuth(p, *clientID, *enterpriseURL)
 	if err != nil {
 		return err
+	}
+	if *serverOnly {
+		addr := fmt.Sprintf("%s:%d", *host, *port)
+		fmt.Printf("GitHub Copilot Responses proxy listening on http://%s/v1/\n", addr)
+		fmt.Println("This mode does not write Codex App config or launch Codex App.")
+		return proxy.New(a).ListenAndServe(addr)
 	}
 	remoteModels, err := copilot.FetchModels(a)
 	if err != nil {
@@ -229,6 +277,8 @@ func main() {
 	case "models":
 		err = commandModels(os.Args[2:])
 	case "serve":
+		err = commandServe(os.Args[2:])
+	case "responses-server":
 		err = commandServe(os.Args[2:])
 	case "launch":
 		err = commandLaunch(os.Args[2:])

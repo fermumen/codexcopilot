@@ -50,6 +50,7 @@ Useful options:
 ./bin/githubcopilot launch codex-app --model gpt-5.1-codex
 ./bin/githubcopilot launch codex-app --port 11435
 ./bin/githubcopilot launch codex-app --config-only
+./bin/githubcopilot launch codex-app --server-only
 ./bin/githubcopilot launch codex-app --restore --no-launch
 ```
 
@@ -111,7 +112,7 @@ internal/proxy              Local HTTP proxy and request header adaptation
 internal/paths              Platform-specific config paths
 ```
 
-The binary has four command groups:
+The binary has these command groups:
 
 ```bash
 githubcopilot auth login
@@ -119,6 +120,7 @@ githubcopilot auth status
 githubcopilot auth logout
 githubcopilot models
 githubcopilot serve
+githubcopilot responses-server
 githubcopilot launch codex-app
 ```
 
@@ -156,6 +158,33 @@ Unrelated user config is preserved by line-oriented replacement, and previous ro
 9. Attempts to launch Codex App on macOS or Windows.
 
 The proxy stays in the foreground. Leave it running while Codex App is using this provider.
+
+## Standalone Responses Server
+
+To run only the local OpenAI-compatible Responses proxy without writing Codex App config or launching Codex App:
+
+```bash
+./bin/githubcopilot responses-server
+```
+
+Equivalent:
+
+```bash
+./bin/githubcopilot serve
+./bin/githubcopilot launch codex-app --server-only
+```
+
+This mode is useful when another OpenAI-compatible client already has its provider config, or when you want to manage Codex App config separately. It still uses the saved GitHub Copilot login and listens on:
+
+```text
+http://127.0.0.1:11435/v1/
+```
+
+Change the bind address with:
+
+```bash
+./bin/githubcopilot responses-server --host 0.0.0.0 --port 11435
+```
 
 ## Codex Config Written
 
