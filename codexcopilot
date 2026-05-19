@@ -1,0 +1,17 @@
+#!/usr/bin/env sh
+set -eu
+
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+if [ -x "$DIR/bin/codexcopilot" ]; then
+  exec "$DIR/bin/codexcopilot" "$@"
+fi
+
+if command -v go >/dev/null 2>&1; then
+  exec go run "$DIR/cmd/codexcopilot" "$@"
+fi
+
+echo "codexcopilot binary not found and Go is not installed." >&2
+echo "Build on a machine with Go using: go build -o bin/codexcopilot ./cmd/codexcopilot" >&2
+exit 127
+

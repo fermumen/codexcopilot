@@ -3,7 +3,7 @@ package catalog
 import (
 	"encoding/json"
 
-	"github.com/local/ghc-launch-codex/internal/copilot"
+	"github.com/fermumen/codexcopilot/internal/copilot"
 )
 
 const BaseInstructions = "You are Codex, a coding agent. Follow the user's instructions, inspect local files before editing, and keep changes narrowly scoped."

@@ -13,14 +13,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/local/ghc-launch-codex/internal/catalog"
-	"github.com/local/ghc-launch-codex/internal/copilot"
-	"github.com/local/ghc-launch-codex/internal/paths"
+	"github.com/fermumen/codexcopilot/internal/catalog"
+	"github.com/fermumen/codexcopilot/internal/copilot"
+	"github.com/fermumen/codexcopilot/internal/paths"
 )
 
 const (
-	ProfileName  = "githubcopilot-launch-codex-app"
-	ProviderName = "githubcopilot-launch-codex-app"
+	ProfileName  = "codexcopilot-codex-app"
+	ProviderName = "codexcopilot-codex-app"
 )
 
 var rootKeys = []string{"profile", "model", "model_provider", "model_catalog_json"}
@@ -254,7 +254,7 @@ func Configure(p paths.Paths, model string, models []copilot.Model, baseURL stri
 	if err := atomicWrite(p.ModelCatalog, catalogData, 0o644); err != nil {
 		return err
 	}
-	normalizedBase := strings.TrimRight(baseURL, "/") + "/v1/"
+	normalizedBase := NormalizeProviderBaseURL(baseURL)
 	text = setRootValues(text, map[string]string{
 		"profile":            ProfileName,
 		"model":              model,
@@ -305,6 +305,18 @@ func Restore(p paths.Paths) (bool, error) {
 	_ = os.Remove(p.ModelCatalog)
 	_ = os.Remove(p.RestoreFile)
 	return true, nil
+}
+
+func NormalizeProviderBaseURL(baseURL string) string {
+	baseURL = strings.TrimSpace(baseURL)
+	baseURL = strings.TrimRight(baseURL, "/")
+	if baseURL == "" {
+		return ""
+	}
+	if strings.HasSuffix(baseURL, "/v1") {
+		return baseURL + "/"
+	}
+	return baseURL + "/v1/"
 }
 
 func LaunchApp() error {

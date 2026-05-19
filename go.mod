@@ -1,4 +1,4 @@
-module github.com/local/ghc-launch-codex
+module github.com/fermumen/codexcopilot
 
 go 1.22
 

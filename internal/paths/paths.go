@@ -7,8 +7,8 @@ import (
 )
 
 const (
-	AppName         = "ghc-launch-codex"
-	CatalogName     = "githubcopilot-launch-models.json"
+	AppName         = "codexcopilot"
+	CatalogName     = "codexcopilot-models.json"
 	ConfigFile      = "config.toml"
 	RestoreFileName = "codex-app-restore.json"
 	AuthFileName    = "auth.json"

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/local/ghc-launch-codex/internal/auth"
-	"github.com/local/ghc-launch-codex/internal/copilot"
+	"github.com/fermumen/codexcopilot/internal/auth"
+	"github.com/fermumen/codexcopilot/internal/copilot"
 )
 
 const SyntheticAttachmentPrompt = "The user attached an image."

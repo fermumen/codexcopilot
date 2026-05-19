@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/local/ghc-launch-codex/internal/paths"
+	"github.com/fermumen/codexcopilot/internal/paths"
 )
 
 const DefaultClientID = "Ov23li8tweQw6odWQebz"
@@ -60,7 +60,7 @@ func requestJSON(method, url string, in any, out any) error {
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "ghc-launch-codex/0.1.0")
+	req.Header.Set("User-Agent", "codexcopilot/0.1.0")
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

@@ -1,6 +1,10 @@
 package copilot
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
 
 func TestCodexAppModelsKeepsOpenAIResponsesModels(t *testing.T) {
 	models := []Model{
@@ -43,5 +47,24 @@ func TestReasoningEffortsAddsXHighFallbackForGPT54(t *testing.T) {
 	got := ReasoningEfforts(model)
 	if len(got) != 4 || got[3] != "xhigh" {
 		t.Fatalf("expected xhigh fallback for gpt-5.4, got %#v", got)
+	}
+}
+
+func TestFetchModelsFromBaseURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.4","supported_endpoints":["/v1/responses"]}]}`))
+	}))
+	defer server.Close()
+
+	models, err := FetchModelsFromBaseURL(server.URL + "/v1/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0]["id"] != "gpt-5.4" {
+		t.Fatalf("unexpected models: %#v", models)
 	}
 }

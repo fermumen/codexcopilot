@@ -11,20 +11,21 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/local/ghc-launch-codex/internal/auth"
-	"github.com/local/ghc-launch-codex/internal/codex"
-	"github.com/local/ghc-launch-codex/internal/copilot"
-	"github.com/local/ghc-launch-codex/internal/paths"
-	"github.com/local/ghc-launch-codex/internal/proxy"
+	"github.com/fermumen/codexcopilot/internal/auth"
+	"github.com/fermumen/codexcopilot/internal/codex"
+	"github.com/fermumen/codexcopilot/internal/copilot"
+	"github.com/fermumen/codexcopilot/internal/paths"
+	"github.com/fermumen/codexcopilot/internal/proxy"
 )
 
 const (
-	defaultHost = "127.0.0.1"
-	defaultPort = 11435
+	defaultHost    = "127.0.0.1"
+	defaultPort    = 11435
+	defaultBaseURL = "http://127.0.0.1:11435/v1/"
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: githubcopilot <auth|models|serve|responses-server|launch> ...")
+	fmt.Fprintln(os.Stderr, "usage: codexcopilot <auth|models|provider|responses-server|launch> ...")
 	os.Exit(2)
 }
 
@@ -135,13 +136,29 @@ func commandServe(args []string) error {
 	return proxy.New(a).ListenAndServe(addr)
 }
 
-func splitLaunchArgs(args []string) ([]string, []string) {
-	boolFlags := map[string]bool{
+func rejectOldLaunchFlags(args []string) error {
+	rejected := map[string]bool{
 		"config-only": true,
 		"no-launch":   true,
 		"server-only": true,
 		"restore":     true,
 	}
+	for _, arg := range args {
+		if !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		name := strings.TrimLeft(arg, "-")
+		if eq := strings.Index(name, "="); eq >= 0 {
+			name = name[:eq]
+		}
+		if rejected[name] {
+			return fmt.Errorf("launch no longer supports --%s; use responses-server or provider commands instead", name)
+		}
+	}
+	return nil
+}
+
+func splitLaunchArgs(args []string) ([]string, []string) {
 	valueFlags := map[string]bool{
 		"model":          true,
 		"host":           true,
@@ -165,24 +182,72 @@ func splitLaunchArgs(args []string) ([]string, []string) {
 		if valueFlags[name] && !strings.Contains(arg, "=") && i+1 < len(args) {
 			i++
 			flagArgs = append(flagArgs, args[i])
-			continue
-		}
-		if boolFlags[name] || strings.Contains(arg, "=") {
-			continue
 		}
 	}
 	return flagArgs, targetArgs
 }
 
+func configureProviderFromModels(p paths.Paths, baseURL string, requestedModel string, remoteModels []copilot.Model) (string, error) {
+	models := copilot.CodexAppModels(remoteModels)
+	if len(models) == 0 {
+		return "", fmt.Errorf("no OpenAI Responses API models usable by Codex were returned from %s", baseURL)
+	}
+	selected, err := copilot.ChooseModel(models, requestedModel)
+	if err != nil {
+		return "", err
+	}
+	if err := codex.Configure(p, selected, models, baseURL); err != nil {
+		return "", err
+	}
+	return selected, nil
+}
+
+func commandProvider(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("provider requires patch or restore")
+	}
+	p := paths.Default()
+	switch args[0] {
+	case "patch":
+		fs := flag.NewFlagSet("provider patch", flag.ExitOnError)
+		baseURL := fs.String("base-url", defaultBaseURL, "OpenAI-compatible proxy base URL")
+		model := fs.String("model", "", "model id")
+		_ = fs.Parse(args[1:])
+		normalizedBase := codex.NormalizeProviderBaseURL(*baseURL)
+		remoteModels, err := copilot.FetchModelsFromBaseURL(normalizedBase)
+		if err != nil {
+			return err
+		}
+		selected, err := configureProviderFromModels(p, normalizedBase, *model, remoteModels)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Patched Codex provider settings for %q at %s.\n", selected, p.CodexConfig)
+		fmt.Printf("Provider base URL: %s\n", normalizedBase)
+	case "restore":
+		restored, err := codex.Restore(p)
+		if err != nil {
+			return err
+		}
+		if restored {
+			fmt.Println("Restored Codex provider settings.")
+		} else {
+			fmt.Println("No Codex provider restore state found.")
+		}
+	default:
+		return fmt.Errorf("unknown provider command %q", args[0])
+	}
+	return nil
+}
+
 func commandLaunch(args []string) error {
+	if err := rejectOldLaunchFlags(args); err != nil {
+		return err
+	}
 	fs := flag.NewFlagSet("launch", flag.ExitOnError)
 	model := fs.String("model", "", "model id")
 	host := fs.String("host", defaultHost, "listen host")
 	port := fs.Int("port", defaultPort, "listen port")
-	configOnly := fs.Bool("config-only", false, "write Codex App config without starting the proxy")
-	noLaunch := fs.Bool("no-launch", false, "do not launch Codex App")
-	serverOnly := fs.Bool("server-only", false, "start only the local Responses proxy without writing Codex App config or launching Codex App")
-	restore := fs.Bool("restore", false, "restore previous Codex App config")
 	clientID := fs.String("client-id", "", "GitHub OAuth client id")
 	enterpriseURL := fs.String("enterprise-url", "", "GitHub Enterprise URL or domain")
 	flagArgs, targetArgs := splitLaunchArgs(args)
@@ -192,67 +257,31 @@ func commandLaunch(args []string) error {
 		return fmt.Errorf("unknown launch target %q, supported target: codex-app", target)
 	}
 	p := paths.Default()
-	if *restore {
-		restored, err := codex.Restore(p)
-		if err != nil {
-			return err
-		}
-		if restored {
-			fmt.Println("Restored Codex App config.")
-		} else {
-			fmt.Println("No Codex App config restore state found.")
-		}
-		if !*noLaunch && !*configOnly {
-			if err := codex.LaunchApp(); err != nil {
-				return err
-			}
-			fmt.Println("Requested Codex App launch.")
-		}
-		return nil
-	}
 	a, err := ensureAuth(p, *clientID, *enterpriseURL)
 	if err != nil {
 		return err
-	}
-	if *serverOnly {
-		addr := fmt.Sprintf("%s:%d", *host, *port)
-		fmt.Printf("GitHub Copilot Responses proxy listening on http://%s/v1/\n", addr)
-		fmt.Println("This mode does not write Codex App config or launch Codex App.")
-		return proxy.New(a).ListenAndServe(addr)
 	}
 	remoteModels, err := copilot.FetchModels(a)
 	if err != nil {
 		return err
 	}
-	models := copilot.CodexAppModels(remoteModels)
-	if len(models) == 0 {
-		return fmt.Errorf("GitHub Copilot returned no OpenAI Responses API models usable by Codex App")
-	}
-	selected, err := copilot.ChooseModel(models, *model)
+	baseURL := fmt.Sprintf("http://%s:%d", *host, *port)
+	selected, err := configureProviderFromModels(p, baseURL, *model, remoteModels)
 	if err != nil {
 		return err
 	}
-	baseURL := fmt.Sprintf("http://%s:%d", *host, *port)
-	if err := codex.Configure(p, selected, models, baseURL); err != nil {
-		return err
-	}
 	fmt.Printf("Configured Codex App profile %q at %s.\n", selected, p.CodexConfig)
-	if *configOnly {
-		return nil
-	}
 	server := &http.Server{Addr: fmt.Sprintf("%s:%d", *host, *port), Handler: proxy.New(a)}
 	errs := make(chan error, 1)
 	go func() {
 		fmt.Printf("GitHub Copilot proxy listening on %s/v1/\n", baseURL)
 		errs <- server.ListenAndServe()
 	}()
-	if !*noLaunch {
-		if err := codex.LaunchApp(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-		} else {
-			fmt.Println("Requested Codex App launch.")
-		}
+	if err := codex.LaunchApp(); err != nil {
+		_ = server.Close()
+		return err
 	}
+	fmt.Println("Requested Codex App launch.")
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	select {
@@ -280,6 +309,8 @@ func main() {
 		err = commandServe(os.Args[2:])
 	case "responses-server":
 		err = commandServe(os.Args[2:])
+	case "provider":
+		err = commandProvider(os.Args[2:])
 	case "launch":
 		err = commandLaunch(os.Args[2:])
 	case "-h", "--help", "help":

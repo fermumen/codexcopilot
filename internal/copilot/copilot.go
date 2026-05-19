@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/local/ghc-launch-codex/internal/auth"
+	"github.com/fermumen/codexcopilot/internal/auth"
 )
 
 var DefaultModelHints = []string{
@@ -42,9 +42,9 @@ func Headers(a auth.Auth, initiator string, vision bool) http.Header {
 	h.Set("Authorization", "Bearer "+a.AccessToken)
 	h.Set("Accept", "application/json")
 	h.Set("Content-Type", "application/json")
-	h.Set("User-Agent", "ghc-launch-codex/0.1.0")
-	h.Set("Editor-Version", "ghc-launch-codex/0.1.0")
-	h.Set("Editor-Plugin-Version", "ghc-launch-codex/0.1.0")
+	h.Set("User-Agent", "codexcopilot/0.1.0")
+	h.Set("Editor-Version", "codexcopilot/0.1.0")
+	h.Set("Editor-Plugin-Version", "codexcopilot/0.1.0")
 	h.Set("Copilot-Integration-Id", "vscode-chat")
 	h.Set("Openai-Intent", "conversation-edits")
 	h.Set("X-Initiator", initiator)
@@ -95,6 +95,23 @@ func FetchModels(a auth.Auth) ([]Model, error) {
 		Data []Model `json:"data"`
 	}
 	if err := requestJSON("GET", APIBase(a)+"/models", Headers(a, "user", false), nil, &payload); err != nil {
+		return nil, err
+	}
+	models := make([]Model, 0, len(payload.Data))
+	for _, model := range payload.Data {
+		if id, ok := model["id"].(string); ok && id != "" {
+			models = append(models, model)
+		}
+	}
+	return models, nil
+}
+
+func FetchModelsFromBaseURL(baseURL string) ([]Model, error) {
+	url := strings.TrimRight(baseURL, "/") + "/models"
+	var payload struct {
+		Data []Model `json:"data"`
+	}
+	if err := requestJSON("GET", url, http.Header{"Accept": []string{"application/json"}}, nil, &payload); err != nil {
 		return nil, err
 	}
 	models := make([]Model, 0, len(payload.Data))

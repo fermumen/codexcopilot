@@ -1,11 +1,11 @@
-# ghc-launch-codex
+# codexcopilot
 
-`ghc-launch-codex` is a small Go launcher that configures Codex App to use GitHub Copilot models through a local OpenAI-compatible proxy.
+`codexcopilot` is a small Go launcher that configures Codex App to use GitHub Copilot models through a local OpenAI-compatible proxy.
 
 The command is intentionally shaped like Ollama's Codex App integration:
 
 ```bash
-githubcopilot launch codex-app
+codexcopilot launch codex-app
 ```
 
 It writes a temporary Codex App provider profile, starts a local proxy, and forwards Codex App's `/v1/responses` traffic to GitHub Copilot using your own Copilot login.
@@ -17,50 +17,47 @@ This is a local compatibility tool, not a GitHub, OpenAI, or Ollama product.
 Build the binary:
 
 ```bash
-go build -o bin/githubcopilot ./cmd/githubcopilot
+go build -o bin/codexcopilot ./cmd/codexcopilot
 ```
 
 Log in with GitHub's device flow:
 
 ```bash
-./bin/githubcopilot auth login
+./bin/codexcopilot auth login
 ```
 
 For GitHub Enterprise:
 
 ```bash
-./bin/githubcopilot auth login --enterprise-url https://github.example.com
+./bin/codexcopilot auth login --enterprise-url https://github.example.com
 ```
 
 Launch Codex App against GitHub Copilot:
 
 ```bash
-./bin/githubcopilot launch codex-app
+./bin/codexcopilot launch codex-app
 ```
 
 Equivalent target spelling:
 
 ```bash
-./bin/githubcopilot launch codex app
+./bin/codexcopilot launch codex app
 ```
 
 Useful options:
 
 ```bash
-./bin/githubcopilot launch codex-app --model gpt-5.1-codex
-./bin/githubcopilot launch codex-app --port 11435
-./bin/githubcopilot launch codex-app --config-only
-./bin/githubcopilot launch codex-app --server-only
-./bin/githubcopilot launch codex-app --restore --no-launch
+./bin/codexcopilot launch codex-app --model gpt-5.1-codex
+./bin/codexcopilot launch codex-app --port 11435
 ```
 
 The repo also includes a convenience wrapper:
 
 ```bash
-./githubcopilot launch codex-app
+./codexcopilot launch codex-app
 ```
 
-The wrapper runs `bin/githubcopilot` when present, otherwise it falls back to `go run ./cmd/githubcopilot` if Go is installed.
+The wrapper runs `bin/codexcopilot` when present, otherwise it falls back to `go run ./cmd/codexcopilot` if Go is installed.
 
 ## Why This Exists
 
@@ -71,7 +68,7 @@ OpenCode solves this in-process with a first-party GitHub Copilot provider. Code
 ```text
 Codex App
   -> http://127.0.0.1:11435/v1/responses
-  -> ghc-launch-codex proxy
+  -> codexcopilot proxy
   -> https://api.githubcopilot.com/responses
 ```
 
@@ -103,7 +100,7 @@ The implementation mirrors two existing systems:
 The code is standard-library Go and is split by responsibility:
 
 ```text
-cmd/githubcopilot/main.go   CLI command routing
+cmd/codexcopilot/main.go   CLI command routing
 internal/auth               GitHub device login and token storage
 internal/copilot            Copilot API URLs, headers, model discovery/filtering
 internal/catalog            Codex App model catalog generation
@@ -115,13 +112,14 @@ internal/paths              Platform-specific config paths
 The binary has these command groups:
 
 ```bash
-githubcopilot auth login
-githubcopilot auth status
-githubcopilot auth logout
-githubcopilot models
-githubcopilot serve
-githubcopilot responses-server
-githubcopilot launch codex-app
+codexcopilot auth login
+codexcopilot auth status
+codexcopilot auth logout
+codexcopilot models
+codexcopilot provider patch
+codexcopilot provider restore
+codexcopilot responses-server
+codexcopilot launch codex-app
 ```
 
 ## Implementation Choices
@@ -131,27 +129,27 @@ The launcher is written in Go because the deployable artifact should be a single
 The project intentionally has no third-party Go dependencies. That keeps builds simple:
 
 ```bash
-go build -o bin/githubcopilot ./cmd/githubcopilot
+go build -o bin/codexcopilot ./cmd/codexcopilot
 ```
 
 The tradeoff is that Codex App config editing is purpose-built rather than handled by a full TOML library. The code only edits root keys and the two owned sections:
 
 ```text
-[profiles.githubcopilot-launch-codex-app]
-[model_providers.githubcopilot-launch-codex-app]
+[profiles.codexcopilot-codex-app]
+[model_providers.codexcopilot-codex-app]
 ```
 
 Unrelated user config is preserved by line-oriented replacement, and previous root values are recorded before the launcher takes ownership.
 
 ## Launch Flow
 
-`githubcopilot launch codex-app` does the following:
+`codexcopilot launch codex-app` does the following:
 
 1. Loads a saved GitHub OAuth token, or starts device login if no token exists.
 2. Calls GitHub Copilot `/models`.
 3. Filters the returned models to OpenAI models that support the Responses API.
 4. Chooses a default model, preferring Codex-oriented GPT-5 model ids when present.
-5. Writes a Codex model catalog to `~/.codex/githubcopilot-launch-models.json`.
+5. Writes a Codex model catalog to `~/.codex/codexcopilot-models.json`.
 6. Saves previous Codex root config values for restore.
 7. Updates `~/.codex/config.toml` to select this provider.
 8. Starts a local HTTP proxy on `127.0.0.1:11435`.
@@ -164,14 +162,7 @@ The proxy stays in the foreground. Leave it running while Codex App is using thi
 To run only the local OpenAI-compatible Responses proxy without writing Codex App config or launching Codex App:
 
 ```bash
-./bin/githubcopilot responses-server
-```
-
-Equivalent:
-
-```bash
-./bin/githubcopilot serve
-./bin/githubcopilot launch codex-app --server-only
+./bin/codexcopilot responses-server
 ```
 
 This mode is useful when another OpenAI-compatible client already has its provider config, or when you want to manage Codex App config separately. It still uses the saved GitHub Copilot login and listens on:
@@ -183,7 +174,35 @@ http://127.0.0.1:11435/v1/
 Change the bind address with:
 
 ```bash
-./bin/githubcopilot responses-server --host 0.0.0.0 --port 11435
+./bin/codexcopilot responses-server --host 0.0.0.0 --port 11435
+```
+
+## Provider Patch
+
+To patch local Codex provider settings without starting the server or launching Codex App:
+
+```bash
+./bin/codexcopilot provider patch
+```
+
+By default this points Codex at the default local Responses server:
+
+```text
+http://127.0.0.1:11435/v1/
+```
+
+For a remote server:
+
+```bash
+./bin/codexcopilot provider patch --base-url http://SERVER:11435/v1/
+```
+
+`provider patch` fetches models from the configured proxy's `/models` endpoint, writes the local Codex model catalog, and makes the provider active. This command does not need GitHub Copilot auth on the patching machine.
+
+Restore previous Codex provider settings:
+
+```bash
+./bin/codexcopilot provider restore
 ```
 
 ## Codex Config Written
@@ -191,22 +210,22 @@ Change the bind address with:
 The launcher writes root config values:
 
 ```toml
-profile = "githubcopilot-launch-codex-app"
+profile = "codexcopilot-codex-app"
 model = "<selected model>"
-model_provider = "githubcopilot-launch-codex-app"
-model_catalog_json = "/home/you/.codex/githubcopilot-launch-models.json"
+model_provider = "codexcopilot-codex-app"
+model_catalog_json = "/home/you/.codex/codexcopilot-models.json"
 ```
 
 It also writes owned profile and provider sections:
 
 ```toml
-[profiles.githubcopilot-launch-codex-app]
+[profiles.codexcopilot-codex-app]
 openai_base_url = "http://127.0.0.1:11435/v1/"
 model = "<selected model>"
-model_provider = "githubcopilot-launch-codex-app"
-model_catalog_json = "/home/you/.codex/githubcopilot-launch-models.json"
+model_provider = "codexcopilot-codex-app"
+model_catalog_json = "/home/you/.codex/codexcopilot-models.json"
 
-[model_providers.githubcopilot-launch-codex-app]
+[model_providers.codexcopilot-codex-app]
 name = "GitHub Copilot"
 base_url = "http://127.0.0.1:11435/v1/"
 wire_api = "responses"
@@ -220,10 +239,10 @@ The tool writes:
 
 ```text
 ~/.codex/config.toml
-~/.codex/githubcopilot-launch-models.json
-<config-home>/ghc-launch-codex/auth.json
-<config-home>/ghc-launch-codex/codex-app-restore.json
-<config-home>/ghc-launch-codex/backup/
+~/.codex/codexcopilot-models.json
+<config-home>/codexcopilot/auth.json
+<config-home>/codexcopilot/codex-app-restore.json
+<config-home>/codexcopilot/backup/
 ```
 
 `<config-home>` is:
@@ -248,7 +267,7 @@ model_catalog_json
 Restore command:
 
 ```bash
-./bin/githubcopilot launch codex-app --restore --no-launch
+./bin/codexcopilot provider restore
 ```
 
 Restore puts those root values back, removes this tool's owned profile/provider sections, deletes the generated model catalog, and removes restore state.
@@ -273,9 +292,9 @@ For upstream Copilot requests it adds:
 
 ```text
 Authorization: Bearer <saved GitHub OAuth token>
-User-Agent: ghc-launch-codex/0.1.0
-Editor-Version: ghc-launch-codex/0.1.0
-Editor-Plugin-Version: ghc-launch-codex/0.1.0
+User-Agent: codexcopilot/0.1.0
+Editor-Version: codexcopilot/0.1.0
+Editor-Plugin-Version: codexcopilot/0.1.0
 Copilot-Integration-Id: vscode-chat
 Openai-Intent: conversation-edits
 X-Initiator: user|agent
@@ -299,10 +318,16 @@ That is the closest approximation available at the wire-proxy layer.
 
 ## Model Selection
 
-The launcher fetches all Copilot models from:
+For `launch codex-app`, the launcher fetches all Copilot models from:
 
 ```text
 GET https://api.githubcopilot.com/models
+```
+
+For `provider patch`, the launcher fetches models from the configured proxy base URL:
+
+```text
+GET http://127.0.0.1:11435/v1/models
 ```
 
 Then it keeps models that:
@@ -348,7 +373,7 @@ If Copilot only reports generic reasoning support, the launcher falls back to `l
 
 ```bash
 go test ./...
-go build -o bin/githubcopilot ./cmd/githubcopilot
+go build -o bin/codexcopilot ./cmd/codexcopilot
 ```
 
 The project intentionally avoids external Go dependencies so it can compile as a single static-ish binary with the standard Go toolchain.
@@ -356,7 +381,44 @@ The project intentionally avoids external Go dependencies so it can compile as a
 ## Current Constraints
 
 - Automatic Codex App launch is implemented for macOS and Windows only.
-- Linux users can still use `--config-only` or `--no-launch` and open Codex App manually if available.
+- Linux and remote-server users should use `responses-server` and `provider patch` instead of `launch codex-app`.
 - The proxy must remain running while Codex App uses the provider.
 - This does not implement a native Codex App provider. It adapts Codex App's provider wire protocol to GitHub Copilot.
 - You need an active GitHub Copilot subscription, and model availability depends on your GitHub account and organization settings.
+
+## Remote Server Workflow
+
+On the Linux, WSL, or remote server that owns the GitHub Copilot login:
+
+```bash
+./bin/codexcopilot auth login
+./bin/codexcopilot responses-server --host 0.0.0.0 --port 11435
+```
+
+On the machine running Codex App:
+
+```bash
+./bin/codexcopilot provider patch --base-url http://SERVER:11435/v1/
+```
+
+For a persistent user service on systemd systems, create `~/.config/systemd/user/codexcopilot.service`:
+
+```ini
+[Unit]
+Description=codexcopilot Responses proxy
+After=network-online.target
+
+[Service]
+ExecStart=%h/bin/codexcopilot responses-server --host 0.0.0.0 --port 11435
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+Then enable it manually:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now codexcopilot.service
+```
