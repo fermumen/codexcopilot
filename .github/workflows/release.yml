@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Test
+        run: go test ./...
+
+  release:
+    name: Build and publish
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          build_tar() {
+            local os="$1"
+            local arch="$2"
+            local dir="dist/codexcopilot_${os}_${arch}"
+            mkdir -p "$dir"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags="-s -w" -o "$dir/codexcopilot" ./cmd/codexcopilot
+            tar -C "$dir" -czf "dist/codexcopilot_${os}_${arch}.tar.gz" codexcopilot
+          }
+
+          build_tar linux amd64
+          build_tar linux arm64
+          build_tar darwin amd64
+          build_tar darwin arm64
+
+          mkdir -p dist/codexcopilot_windows_amd64
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o dist/codexcopilot_windows_amd64/codexcopilot.exe ./cmd/codexcopilot
+          (cd dist/codexcopilot_windows_amd64 && zip -q ../codexcopilot_windows_amd64.zip codexcopilot.exe)
+
+          sha256sum \
+            dist/codexcopilot_darwin_amd64.tar.gz \
+            dist/codexcopilot_darwin_arm64.tar.gz \
+            dist/codexcopilot_linux_amd64.tar.gz \
+            dist/codexcopilot_linux_arm64.tar.gz \
+            dist/codexcopilot_windows_amd64.zip \
+            > dist/checksums.txt
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=(
+            dist/codexcopilot_linux_amd64.tar.gz
+            dist/codexcopilot_linux_arm64.tar.gz
+            dist/codexcopilot_darwin_amd64.tar.gz
+            dist/codexcopilot_darwin_arm64.tar.gz
+            dist/codexcopilot_windows_amd64.zip
+            dist/checksums.txt
+          )
+
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
+              --title "codexcopilot ${GITHUB_REF_NAME}" \
+              --notes "Automated release for ${GITHUB_REF_NAME}." \
+              --verify-tag
+          fi
