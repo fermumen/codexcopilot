@@ -7,7 +7,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -22,11 +25,16 @@ const (
 	defaultHost    = "127.0.0.1"
 	defaultPort    = 11435
 	defaultBaseURL = "http://127.0.0.1:11435/v1/"
+	serviceName    = "codexcopilot.service"
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: codexcopilot <auth|models|provider|responses-server|launch> ...")
+	fmt.Fprintln(os.Stderr, "usage: codexcopilot <auth|models|provider|responses-server|install-server-service|launch> ...")
 	os.Exit(2)
+}
+
+var runExternalCommand = func(name string, args ...string) ([]byte, error) {
+	return exec.Command(name, args...).CombinedOutput()
 }
 
 func ensureAuth(p paths.Paths, clientID, enterpriseURL string) (auth.Auth, error) {
@@ -134,6 +142,92 @@ func commandServe(args []string) error {
 	fmt.Printf("GitHub Copilot Responses proxy listening on http://%s/v1/\n", addr)
 	fmt.Println("This mode does not write Codex App config or launch Codex App.")
 	return proxy.New(a).ListenAndServe(addr)
+}
+
+func systemdQuote(arg string) string {
+	arg = strings.ReplaceAll(arg, `%`, `%%`)
+	arg = strings.ReplaceAll(arg, `\`, `\\`)
+	arg = strings.ReplaceAll(arg, `"`, `\"`)
+	return `"` + arg + `"`
+}
+
+func serverServiceUnit(binaryPath, host string, port int) string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=codexcopilot Responses proxy",
+		"After=network-online.target",
+		"Wants=network-online.target",
+		"",
+		"[Service]",
+		"ExecStart=" + strings.Join([]string{
+			systemdQuote(binaryPath),
+			"responses-server",
+			"--host",
+			systemdQuote(host),
+			"--port",
+			fmt.Sprint(port),
+		}, " "),
+		"Restart=on-failure",
+		"RestartSec=2",
+		"",
+		"[Install]",
+		"WantedBy=default.target",
+		"",
+	}, "\n")
+}
+
+func commandInstallServerService(args []string) error {
+	if runtime.GOOS != "linux" {
+		return fmt.Errorf("install-server-service is only supported on Linux systems with systemd")
+	}
+	fs := flag.NewFlagSet("install-server-service", flag.ExitOnError)
+	host := fs.String("host", defaultHost, "listen host")
+	port := fs.Int("port", defaultPort, "listen port")
+	binaryPath := fs.String("binary", "", "codexcopilot executable path")
+	_ = fs.Parse(args)
+	if *host == "" {
+		return fmt.Errorf("--host cannot be empty")
+	}
+	if *port < 1 || *port > 65535 {
+		return fmt.Errorf("--port must be between 1 and 65535")
+	}
+	p := paths.Default()
+	currentAuth, err := auth.Load(p)
+	if err != nil {
+		return err
+	}
+	if currentAuth == nil {
+		return fmt.Errorf("no saved GitHub Copilot login; run codexcopilot auth login before installing the service")
+	}
+	exe := *binaryPath
+	if exe == "" {
+		exe, err = os.Executable()
+		if err != nil {
+			return err
+		}
+	}
+	exe, err = filepath.Abs(exe)
+	if err != nil {
+		return err
+	}
+	serviceDir := filepath.Join(paths.ConfigHome(), "systemd", "user")
+	servicePath := filepath.Join(serviceDir, serviceName)
+	if err := os.MkdirAll(serviceDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(servicePath, []byte(serverServiceUnit(exe, *host, *port)), 0o644); err != nil {
+		return err
+	}
+	if out, err := runExternalCommand("systemctl", "--user", "daemon-reload"); err != nil {
+		return fmt.Errorf("systemctl --user daemon-reload failed: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	if out, err := runExternalCommand("systemctl", "--user", "enable", "--now", serviceName); err != nil {
+		return fmt.Errorf("systemctl --user enable --now %s failed: %w\n%s", serviceName, err, strings.TrimSpace(string(out)))
+	}
+	fmt.Printf("Installed and started %s.\n", serviceName)
+	fmt.Printf("Unit: %s\n", servicePath)
+	fmt.Printf("Proxy: http://%s:%d/v1/\n", *host, *port)
+	return nil
 }
 
 func rejectOldLaunchFlags(args []string) error {
@@ -309,6 +403,8 @@ func main() {
 		err = commandServe(os.Args[2:])
 	case "responses-server":
 		err = commandServe(os.Args[2:])
+	case "install-server-service":
+		err = commandInstallServerService(os.Args[2:])
 	case "provider":
 		err = commandProvider(os.Args[2:])
 	case "launch":

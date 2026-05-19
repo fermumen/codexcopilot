@@ -131,6 +131,7 @@ codexcopilot models
 codexcopilot provider patch
 codexcopilot provider restore
 codexcopilot responses-server
+codexcopilot install-server-service
 codexcopilot launch codex-app
 ```
 
@@ -188,6 +189,31 @@ Change the bind address with:
 ```bash
 ./bin/codexcopilot responses-server --host 0.0.0.0 --port 11435
 ```
+
+## Systemd User Service
+
+On Linux systems with systemd, install the Responses proxy as a persistent user service:
+
+```bash
+codexcopilot auth login
+codexcopilot install-server-service
+```
+
+By default the service runs:
+
+```bash
+codexcopilot responses-server --host 127.0.0.1 --port 11435
+```
+
+For a server, WSL instance, or VM that should accept connections from another machine:
+
+```bash
+codexcopilot install-server-service --host 0.0.0.0 --port 11435
+```
+
+The command requires a saved Copilot login, writes `~/.config/systemd/user/codexcopilot.service`, runs `systemctl --user daemon-reload`, and enables the service with `systemctl --user enable --now codexcopilot.service`.
+
+This is a user service. On systems where user services should start before login, enable linger separately with your system administrator's preferred policy.
 
 ## Provider Patch
 
@@ -304,9 +330,9 @@ For upstream Copilot requests it adds:
 
 ```text
 Authorization: Bearer <saved GitHub OAuth token>
-User-Agent: codexcopilot/0.1.0
-Editor-Version: codexcopilot/0.1.0
-Editor-Plugin-Version: codexcopilot/0.1.0
+User-Agent: codexcopilot/0.2.0
+Editor-Version: codexcopilot/0.2.0
+Editor-Plugin-Version: codexcopilot/0.2.0
 Copilot-Integration-Id: vscode-chat
 Openai-Intent: conversation-edits
 X-Initiator: user|agent
@@ -407,30 +433,15 @@ On the Linux, WSL, or remote server that owns the GitHub Copilot login:
 ./bin/codexcopilot responses-server --host 0.0.0.0 --port 11435
 ```
 
+For a persistent user service on the server:
+
+```bash
+codexcopilot auth login
+codexcopilot install-server-service --host 0.0.0.0 --port 11435
+```
+
 On the machine running Codex App:
 
 ```bash
 ./bin/codexcopilot provider patch --base-url http://SERVER:11435/v1/
-```
-
-For a persistent user service on systemd systems, create `~/.config/systemd/user/codexcopilot.service`:
-
-```ini
-[Unit]
-Description=codexcopilot Responses proxy
-After=network-online.target
-
-[Service]
-ExecStart=%h/bin/codexcopilot responses-server --host 0.0.0.0 --port 11435
-Restart=on-failure
-
-[Install]
-WantedBy=default.target
-```
-
-Then enable it manually:
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now codexcopilot.service
 ```
