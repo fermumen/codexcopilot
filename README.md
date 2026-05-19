@@ -14,6 +14,18 @@ This is a local compatibility tool, not a GitHub, OpenAI, or Ollama product.
 
 ## Quick Start
 
+Install the latest release:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fermumen/codexcopilot/master/install.sh | sh
+```
+
+By default this installs to `~/.local/bin`. To choose another location:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fermumen/codexcopilot/master/install.sh | CODEXCOPILOT_INSTALL_DIR=/usr/local/bin sh
+```
+
 Build the binary:
 
 ```bash
