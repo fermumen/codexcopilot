@@ -361,9 +361,9 @@ For upstream Copilot requests it adds:
 
 ```text
 Authorization: Bearer <saved GitHub OAuth token>
-User-Agent: codexcopilot/0.4.0
-Editor-Version: codexcopilot/0.4.0
-Editor-Plugin-Version: codexcopilot/0.4.0
+User-Agent: codexcopilot/0.4.1
+Editor-Version: codexcopilot/0.4.1
+Editor-Plugin-Version: codexcopilot/0.4.1
 Copilot-Integration-Id: vscode-chat
 Openai-Intent: conversation-edits
 X-Initiator: user|agent
@@ -427,7 +427,14 @@ Reasoning controls are driven by the generated Codex model catalog. For each mod
 
 ```json
 "default_reasoning_level": "medium",
-"supported_reasoning_levels": ["low", "medium", "high", "xhigh"]
+"supported_reasoning_levels": [
+  {"effort": "low", "description": "Fast responses with lighter reasoning"},
+  {"effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks"},
+  {"effort": "high", "description": "Greater reasoning depth for complex problems"},
+  {"effort": "xhigh", "description": "Extra high reasoning depth for complex problems"}
+],
+"supports_reasoning_summaries": false,
+"default_reasoning_summary": "none"
 ```
 
 The exact values come from Copilot model metadata when available:
@@ -436,7 +443,7 @@ The exact values come from Copilot model metadata when available:
 capabilities.supports.reasoning_effort
 ```
 
-If Copilot only reports generic reasoning support, the launcher falls back to `low`, `medium`, and `high`. For `gpt-5.4*` model ids, it includes `xhigh` as well so Codex App can expose the extra effort level.
+If Copilot only reports generic reasoning support, the launcher falls back to `low`, `medium`, and `high`. For `gpt-5.4*` model ids, it includes `xhigh` as well so Codex App can expose the extra effort level. Reasoning summaries are disabled because this proxy only needs effort selection and should avoid sending unsupported summary options upstream.
 
 ## Build and Test
 
