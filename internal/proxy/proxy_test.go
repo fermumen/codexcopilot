@@ -1,6 +1,9 @@
 package proxy
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestInitiatorResponsesUserTurn(t *testing.T) {
 	got := Initiator([]byte(`{"input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`))
@@ -28,5 +31,37 @@ func TestInitiatorUnknownDefaultsUser(t *testing.T) {
 		if got != "user" {
 			t.Fatalf("expected user, got %s", got)
 		}
+	}
+}
+
+func TestStripUnsupportedToolsRemovesImageGenerationTools(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.4","tools":[{"type":"shell"},{"type":"image_generation"},{"type":"image_tool"}],"input":"hi"}`)
+	got := stripUnsupportedTools(body)
+	var payload struct {
+		Tools []struct {
+			Type string `json:"type"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(got, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Tools) != 1 || payload.Tools[0].Type != "shell" {
+		t.Fatalf("unexpected tools after strip: %s", got)
+	}
+}
+
+func TestStripUnsupportedToolsLeavesSupportedPayloadUnchanged(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"shell"}],"input":"hi"}`)
+	got := stripUnsupportedTools(body)
+	if string(got) != string(body) {
+		t.Fatalf("expected unchanged body, got %s", got)
+	}
+}
+
+func TestStripUnsupportedToolsLeavesInvalidJSONUnchanged(t *testing.T) {
+	body := []byte(`{`)
+	got := stripUnsupportedTools(body)
+	if string(got) != string(body) {
+		t.Fatalf("expected unchanged body, got %s", got)
 	}
 }

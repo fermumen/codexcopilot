@@ -17,6 +17,11 @@ import (
 
 const SyntheticAttachmentPrompt = "The user attached an image."
 
+var unsupportedToolTypes = map[string]bool{
+	"image_generation": true,
+	"image_tool":       true,
+}
+
 var hopByHopHeaders = map[string]bool{
 	"connection":          true,
 	"content-length":      true,
@@ -58,6 +63,41 @@ func bodyHasImage(body []byte) bool {
 		return false
 	}
 	return hasImage(payload)
+}
+
+func stripUnsupportedTools(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body
+	}
+	tools, ok := payload["tools"].([]any)
+	if !ok {
+		return body
+	}
+	filtered := tools[:0]
+	removed := false
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			filtered = append(filtered, rawTool)
+			continue
+		}
+		kind, _ := tool["type"].(string)
+		if unsupportedToolTypes[kind] {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, rawTool)
+	}
+	if !removed {
+		return body
+	}
+	payload["tools"] = filtered
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return data
 }
 
 func isSyntheticAttachmentMessage(message any) bool {
@@ -222,6 +262,7 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": map[string]any{"message": err.Error()}})
 		return
 	}
+	body = stripUnsupportedTools(body)
 	base, err := url.Parse(copilot.APIBase(s.Auth))
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]any{"message": err.Error()}})
