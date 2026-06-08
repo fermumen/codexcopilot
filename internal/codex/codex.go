@@ -71,8 +71,10 @@ func backupFile(path string, backupDir string) error {
 		jj, _ := os.Stat(matches[j])
 		return ii.ModTime().After(jj.ModTime())
 	})
-	for _, stale := range matches[5:] {
-		_ = os.Remove(stale)
+	if len(matches) > 5 {
+		for _, stale := range matches[5:] {
+			_ = os.Remove(stale)
+		}
 	}
 	return nil
 }
@@ -106,7 +108,7 @@ func parseRootValues(text string) map[string]rootValue {
 }
 
 func saveRestoreState(p paths.Paths, text string) error {
-	if _, err := os.Stat(p.RestoreFile); err == nil && strings.Contains(text, `profile = "`+ProfileName+`"`) {
+	if _, err := os.Stat(p.RestoreFile); err == nil {
 		return nil
 	}
 	state := restoreState{Root: map[string]rootValue{}}
@@ -163,6 +165,47 @@ func upsertSection(text string, header string, body string) string {
 		text += "\n"
 	}
 	return text + replacement
+}
+
+func removeRootValue(text string, key string) string {
+	lines := strings.SplitAfter(text, "\n")
+	tableIndex := len(lines)
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			tableIndex = i
+			break
+		}
+	}
+	root := append([]string{}, lines[:tableIndex]...)
+	rest := append([]string{}, lines[tableIndex:]...)
+	pattern := regexp.MustCompile(`^\s*` + regexp.QuoteMeta(key) + `\s*=`)
+	for i, line := range root {
+		if pattern.MatchString(line) {
+			root[i] = ""
+		}
+	}
+	return strings.Join(append(root, rest...), "")
+}
+
+func providerSectionText(normalizedBase string) string {
+	return strings.Join([]string{
+		"name = " + quote("GitHub Copilot"),
+		"base_url = " + quote(normalizedBase),
+		`wire_api = "responses"`,
+	}, "\n")
+}
+
+func profileConfigText(p paths.Paths, model string, normalizedBase string) string {
+	return strings.Join([]string{
+		"model = " + quote(model),
+		"model_provider = " + quote(ProviderName),
+		"model_catalog_json = " + quote(p.ModelCatalog),
+		"",
+		"[model_providers." + ProviderName + "]",
+		providerSectionText(normalizedBase),
+		"",
+	}, "\n")
 }
 
 func setRootValues(text string, values map[string]string) string {
@@ -255,30 +298,25 @@ func Configure(p paths.Paths, model string, models []copilot.Model, baseURL stri
 		return err
 	}
 	normalizedBase := NormalizeProviderBaseURL(baseURL)
+	text = removeRootValue(text, "profile")
+	text = removeSection(text, "[profiles."+ProfileName+"]")
 	text = setRootValues(text, map[string]string{
-		"profile":            ProfileName,
 		"model":              model,
 		"model_provider":     ProviderName,
 		"model_catalog_json": p.ModelCatalog,
 	})
-	text = upsertSection(text, "[profiles."+ProfileName+"]", strings.Join([]string{
-		"openai_base_url = " + quote(normalizedBase),
-		"model = " + quote(model),
-		"model_provider = " + quote(ProviderName),
-		"model_catalog_json = " + quote(p.ModelCatalog),
-	}, "\n"))
-	text = upsertSection(text, "[model_providers."+ProviderName+"]", strings.Join([]string{
-		"name = " + quote("GitHub Copilot"),
-		"base_url = " + quote(normalizedBase),
-		`wire_api = "responses"`,
-	}, "\n"))
+	text = upsertSection(text, "[model_providers."+ProviderName+"]", providerSectionText(normalizedBase))
+	if err := atomicWrite(p.ProfileConfig, []byte(profileConfigText(p, model, normalizedBase)), 0o644); err != nil {
+		return err
+	}
 	return atomicWrite(p.CodexConfig, []byte(text), 0o644)
 }
 
 func Restore(p paths.Paths) (bool, error) {
 	configData, configErr := os.ReadFile(p.CodexConfig)
 	restoreData, restoreErr := os.ReadFile(p.RestoreFile)
-	if errors.Is(configErr, os.ErrNotExist) && errors.Is(restoreErr, os.ErrNotExist) {
+	_, profileErr := os.Stat(p.ProfileConfig)
+	if errors.Is(configErr, os.ErrNotExist) && errors.Is(restoreErr, os.ErrNotExist) && errors.Is(profileErr, os.ErrNotExist) {
 		return false, nil
 	}
 	if configErr != nil && !errors.Is(configErr, os.ErrNotExist) {
@@ -303,6 +341,7 @@ func Restore(p paths.Paths) (bool, error) {
 		return false, err
 	}
 	_ = os.Remove(p.ModelCatalog)
+	_ = os.Remove(p.ProfileConfig)
 	_ = os.Remove(p.RestoreFile)
 	return true, nil
 }

@@ -15,13 +15,14 @@ const (
 )
 
 type Paths struct {
-	CodexDir     string
-	CodexConfig  string
-	ModelCatalog string
-	StateDir     string
-	AuthFile     string
-	RestoreFile  string
-	BackupDir    string
+	CodexDir      string
+	CodexConfig   string
+	ProfileConfig string
+	ModelCatalog  string
+	StateDir      string
+	AuthFile      string
+	RestoreFile   string
+	BackupDir     string
 }
 
 func ConfigHome() string {
@@ -47,12 +48,13 @@ func Default() Paths {
 	codexDir := filepath.Join(home, ".codex")
 	stateDir := filepath.Join(ConfigHome(), AppName)
 	return Paths{
-		CodexDir:     codexDir,
-		CodexConfig:  filepath.Join(codexDir, ConfigFile),
-		ModelCatalog: filepath.Join(codexDir, CatalogName),
-		StateDir:     stateDir,
-		AuthFile:     filepath.Join(stateDir, AuthFileName),
-		RestoreFile:  filepath.Join(stateDir, RestoreFileName),
-		BackupDir:    filepath.Join(stateDir, "backup"),
+		CodexDir:      codexDir,
+		CodexConfig:   filepath.Join(codexDir, ConfigFile),
+		ProfileConfig: filepath.Join(codexDir, "codexcopilot-codex-app.config.toml"),
+		ModelCatalog:  filepath.Join(codexDir, CatalogName),
+		StateDir:      stateDir,
+		AuthFile:      filepath.Join(stateDir, AuthFileName),
+		RestoreFile:   filepath.Join(stateDir, RestoreFileName),
+		BackupDir:     filepath.Join(stateDir, "backup"),
 	}
 }

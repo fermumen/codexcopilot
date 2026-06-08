@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -29,12 +30,20 @@ const (
 )
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: codexcopilot <auth|models|provider|responses-server|install-server-service|launch> ...")
+	fmt.Fprintln(os.Stderr, "usage: codexcopilot <auth|models|provider|responses-server|install-server-service|codex|launch> ...")
 	os.Exit(2)
 }
 
 var runExternalCommand = func(name string, args ...string) ([]byte, error) {
 	return exec.Command(name, args...).CombinedOutput()
+}
+
+var runForegroundCommand = func(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 func ensureAuth(p paths.Paths, clientID, enterpriseURL string) (auth.Auth, error) {
@@ -296,6 +305,83 @@ func configureProviderFromModels(p paths.Paths, baseURL string, requestedModel s
 	return selected, nil
 }
 
+func splitPassthroughArgs(args []string) ([]string, []string) {
+	for i, arg := range args {
+		if arg == "--" {
+			return args[:i], args[i+1:]
+		}
+	}
+	return args, nil
+}
+
+func startProxy(a auth.Auth, host string, port int) (*http.Server, <-chan error, string, error) {
+	addr := fmt.Sprintf("%s:%d", host, port)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	server := &http.Server{Addr: addr, Handler: proxy.New(a)}
+	errs := make(chan error, 1)
+	go func() {
+		errs <- server.Serve(listener)
+	}()
+	return server, errs, fmt.Sprintf("http://%s:%d", host, port), nil
+}
+
+func restoreProvider(p paths.Paths) {
+	if _, err := codex.Restore(p); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to restore Codex provider settings: %v\n", err)
+	}
+}
+
+func commandCodex(args []string) error {
+	toolArgs, codexArgs := splitPassthroughArgs(args)
+	fs := flag.NewFlagSet("codex", flag.ExitOnError)
+	model := fs.String("model", "", "model id")
+	host := fs.String("host", defaultHost, "listen host")
+	port := fs.Int("port", defaultPort, "listen port")
+	clientID := fs.String("client-id", "", "GitHub OAuth client id")
+	enterpriseURL := fs.String("enterprise-url", "", "GitHub Enterprise URL or domain")
+	codexBin := fs.String("codex-bin", "codex", "codex executable path")
+	_ = fs.Parse(toolArgs)
+	codexArgs = append(fs.Args(), codexArgs...)
+	p := paths.Default()
+	a, err := ensureAuth(p, *clientID, *enterpriseURL)
+	if err != nil {
+		return err
+	}
+	remoteModels, err := copilot.FetchModels(a)
+	if err != nil {
+		return err
+	}
+	server, errs, baseURL, err := startProxy(a, *host, *port)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = server.Close()
+	}()
+	selected, err := configureProviderFromModels(p, baseURL, *model, remoteModels)
+	if err != nil {
+		_ = server.Close()
+		return err
+	}
+	defer restoreProvider(p)
+	fmt.Printf("Configured Codex profile %q for %q.\n", codex.ProfileName, selected)
+	fmt.Printf("GitHub Copilot proxy listening on %s/v1/\n", baseURL)
+	runArgs := append([]string{"--profile", codex.ProfileName}, codexArgs...)
+	runErr := runForegroundCommand(*codexBin, runArgs...)
+	_ = server.Close()
+	select {
+	case err := <-errs:
+		if err != nil && err != http.ErrServerClosed {
+			return err
+		}
+	default:
+	}
+	return runErr
+}
+
 func commandProvider(args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("provider requires patch or restore")
@@ -359,18 +445,18 @@ func commandLaunch(args []string) error {
 	if err != nil {
 		return err
 	}
-	baseURL := fmt.Sprintf("http://%s:%d", *host, *port)
-	selected, err := configureProviderFromModels(p, baseURL, *model, remoteModels)
+	server, errs, baseURL, err := startProxy(a, *host, *port)
 	if err != nil {
 		return err
 	}
+	selected, err := configureProviderFromModels(p, baseURL, *model, remoteModels)
+	if err != nil {
+		_ = server.Close()
+		return err
+	}
+	defer restoreProvider(p)
 	fmt.Printf("Configured Codex App profile %q at %s.\n", selected, p.CodexConfig)
-	server := &http.Server{Addr: fmt.Sprintf("%s:%d", *host, *port), Handler: proxy.New(a)}
-	errs := make(chan error, 1)
-	go func() {
-		fmt.Printf("GitHub Copilot proxy listening on %s/v1/\n", baseURL)
-		errs <- server.ListenAndServe()
-	}()
+	fmt.Printf("GitHub Copilot proxy listening on %s/v1/\n", baseURL)
 	if err := codex.LaunchApp(); err != nil {
 		_ = server.Close()
 		return err
@@ -405,6 +491,8 @@ func main() {
 		err = commandServe(os.Args[2:])
 	case "install-server-service":
 		err = commandInstallServerService(os.Args[2:])
+	case "codex":
+		err = commandCodex(os.Args[2:])
 	case "provider":
 		err = commandProvider(os.Args[2:])
 	case "launch":

@@ -132,6 +132,7 @@ codexcopilot provider patch
 codexcopilot provider restore
 codexcopilot responses-server
 codexcopilot install-server-service
+codexcopilot codex
 codexcopilot launch codex-app
 ```
 
@@ -145,14 +146,14 @@ The project intentionally has no third-party Go dependencies. That keeps builds 
 go build -o bin/codexcopilot ./cmd/codexcopilot
 ```
 
-The tradeoff is that Codex App config editing is purpose-built rather than handled by a full TOML library. The code only edits root keys and the two owned sections:
+The tradeoff is that Codex App config editing is purpose-built rather than handled by a full TOML library. The code only edits root model/provider keys, this tool's owned provider section, and this generated Codex profile-v2 file:
 
 ```text
-[profiles.codexcopilot-codex-app]
+~/.codex/codexcopilot-codex-app.config.toml
 [model_providers.codexcopilot-codex-app]
 ```
 
-Unrelated user config is preserved by line-oriented replacement, and previous root values are recorded before the launcher takes ownership.
+Current Codex no longer accepts legacy root `profile = "..."` selection in `~/.codex/config.toml`. Profile selection is done with `codex --profile codexcopilot-codex-app`, which layers `~/.codex/codexcopilot-codex-app.config.toml` over the base config. Unrelated user config is preserved by line-oriented replacement, and previous root values are recorded before the launcher takes ownership.
 
 ## Launch Flow
 
@@ -168,7 +169,7 @@ Unrelated user config is preserved by line-oriented replacement, and previous ro
 8. Starts a local HTTP proxy on `127.0.0.1:11435`.
 9. Attempts to launch Codex App on macOS or Windows.
 
-The proxy stays in the foreground. Leave it running while Codex App is using this provider.
+The proxy stays in the foreground. When the launcher exits, it restores the previous Codex provider settings and removes the generated profile file.
 
 ## Standalone Responses Server
 
@@ -188,6 +189,29 @@ Change the bind address with:
 
 ```bash
 ./bin/codexcopilot responses-server --host 0.0.0.0 --port 11435
+```
+
+## Headless Codex Wrapper
+
+For a temporary headless Codex CLI session, let codexcopilot own the whole lifecycle:
+
+```bash
+codexcopilot auth login
+codexcopilot codex
+```
+
+This command starts the proxy, writes Codex provider settings, runs:
+
+```bash
+codex --profile codexcopilot-codex-app
+```
+
+and restores the previous Codex config when Codex exits.
+
+Pass codexcopilot options before `--`, and Codex CLI args after it:
+
+```bash
+codexcopilot codex --model gpt-5.4 -- -C /work "inspect this repo"
 ```
 
 ## Systemd User Service
@@ -245,20 +269,9 @@ Restore previous Codex provider settings:
 
 ## Codex Config Written
 
-The launcher writes root config values:
+The launcher writes root defaults in `~/.codex/config.toml` without using legacy root `profile` selection:
 
 ```toml
-profile = "codexcopilot-codex-app"
-model = "<selected model>"
-model_provider = "codexcopilot-codex-app"
-model_catalog_json = "/home/you/.codex/codexcopilot-models.json"
-```
-
-It also writes owned profile and provider sections:
-
-```toml
-[profiles.codexcopilot-codex-app]
-openai_base_url = "http://127.0.0.1:11435/v1/"
 model = "<selected model>"
 model_provider = "codexcopilot-codex-app"
 model_catalog_json = "/home/you/.codex/codexcopilot-models.json"
@@ -269,7 +282,20 @@ base_url = "http://127.0.0.1:11435/v1/"
 wire_api = "responses"
 ```
 
-`wire_api = "responses"` is important because Codex App should send Responses API requests, not Chat Completions requests, for the selected models.
+It also writes a Codex profile-v2 file at `~/.codex/codexcopilot-codex-app.config.toml` so current Codex CLI can be launched with `--profile codexcopilot-codex-app`:
+
+```toml
+model = "<selected model>"
+model_provider = "codexcopilot-codex-app"
+model_catalog_json = "/home/you/.codex/codexcopilot-models.json"
+
+[model_providers.codexcopilot-codex-app]
+name = "GitHub Copilot"
+base_url = "http://127.0.0.1:11435/v1/"
+wire_api = "responses"
+```
+
+`wire_api = "responses"` is important because Codex should send Responses API requests, not Chat Completions requests, for the selected models.
 
 ## Files Touched
 
@@ -277,6 +303,7 @@ The tool writes:
 
 ```text
 ~/.codex/config.toml
+~/.codex/codexcopilot-codex-app.config.toml
 ~/.codex/codexcopilot-models.json
 <config-home>/codexcopilot/auth.json
 <config-home>/codexcopilot/codex-app-restore.json
@@ -293,7 +320,7 @@ Auth tokens are written with user-only permissions where the platform supports i
 
 ## Restore Behavior
 
-Before changing Codex App config, the launcher stores the previous root values for:
+Before changing Codex config, the launcher stores the previous root values for:
 
 ```text
 profile
@@ -302,13 +329,15 @@ model_provider
 model_catalog_json
 ```
 
+The `profile` key is tracked only so codexcopilot can remove older legacy config it wrote before Codex switched to profile-v2 files. New patches do not write root `profile`.
+
 Restore command:
 
 ```bash
 ./bin/codexcopilot provider restore
 ```
 
-Restore puts those root values back, removes this tool's owned profile/provider sections, deletes the generated model catalog, and removes restore state.
+Restore puts those root values back, removes this tool's owned provider section and generated profile-v2 file, deletes the generated model catalog, and removes restore state.
 
 ## Proxy Behavior
 
@@ -330,9 +359,9 @@ For upstream Copilot requests it adds:
 
 ```text
 Authorization: Bearer <saved GitHub OAuth token>
-User-Agent: codexcopilot/0.2.0
-Editor-Version: codexcopilot/0.2.0
-Editor-Plugin-Version: codexcopilot/0.2.0
+User-Agent: codexcopilot/0.3.0
+Editor-Version: codexcopilot/0.3.0
+Editor-Plugin-Version: codexcopilot/0.3.0
 Copilot-Integration-Id: vscode-chat
 Openai-Intent: conversation-edits
 X-Initiator: user|agent
@@ -419,14 +448,21 @@ The project intentionally avoids external Go dependencies so it can compile as a
 ## Current Constraints
 
 - Automatic Codex App launch is implemented for macOS and Windows only.
-- Linux and remote-server users should use `responses-server` and `provider patch` instead of `launch codex-app`.
+- Linux and remote-server users should use `codexcopilot codex` for temporary headless CLI sessions, or `responses-server` plus `provider patch` for persistent/manual setups.
 - The proxy must remain running while Codex App uses the provider.
 - This does not implement a native Codex App provider. It adapts Codex App's provider wire protocol to GitHub Copilot.
 - You need an active GitHub Copilot subscription, and model availability depends on your GitHub account and organization settings.
 
 ## Remote Server Workflow
 
-On the Linux, WSL, or remote server that owns the GitHub Copilot login:
+On the Linux, WSL, or remote server that owns the GitHub Copilot login, the simplest temporary headless workflow is:
+
+```bash
+./bin/codexcopilot auth login
+./bin/codexcopilot codex
+```
+
+For a persistent server that another machine will use:
 
 ```bash
 ./bin/codexcopilot auth login

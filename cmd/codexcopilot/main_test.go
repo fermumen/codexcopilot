@@ -44,6 +44,16 @@ func TestRejectOldLaunchFlags(t *testing.T) {
 	}
 }
 
+func TestSplitPassthroughArgs(t *testing.T) {
+	toolArgs, codexArgs := splitPassthroughArgs([]string{"--model", "gpt-5.4", "--", "-C", "/work", "hello"})
+	if !reflect.DeepEqual(toolArgs, []string{"--model", "gpt-5.4"}) {
+		t.Fatalf("unexpected tool args: %#v", toolArgs)
+	}
+	if !reflect.DeepEqual(codexArgs, []string{"-C", "/work", "hello"}) {
+		t.Fatalf("unexpected codex args: %#v", codexArgs)
+	}
+}
+
 func TestDefaultBaseURLMatchesResponsesServer(t *testing.T) {
 	if defaultBaseURL != "http://127.0.0.1:11435/v1/" {
 		t.Fatalf("unexpected default base URL %q", defaultBaseURL)
@@ -74,8 +84,12 @@ func TestProviderPatchUsesBaseURLModels(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !strings.Contains(text, `profile = "codexcopilot-codex-app"`) {
-		t.Fatalf("config was not patched:\n%s", text)
+	if strings.Contains(text, `profile = "codexcopilot-codex-app"`) {
+		t.Fatalf("config contains legacy profile setting:\n%s", text)
+	}
+	profilePath := filepath.Join(root, ".codex", "codexcopilot-codex-app.config.toml")
+	if _, err := os.Stat(profilePath); err != nil {
+		t.Fatal(err)
 	}
 	if !strings.Contains(text, `base_url = "`+server.URL+`/v1/"`) {
 		t.Fatalf("config missing proxy base URL:\n%s", text)
