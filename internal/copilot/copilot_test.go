@@ -22,6 +22,63 @@ func TestCodexAppModelsKeepsOpenAIResponsesModels(t *testing.T) {
 	}
 }
 
+func TestChooseModelPrefersLatestGPTVersion(t *testing.T) {
+	models := []Model{
+		{"id": "gpt-5.4", "supported_endpoints": []any{"/v1/responses"}},
+		{"id": "gpt-5.5", "supported_endpoints": []any{"/v1/responses"}},
+		{"id": "gpt-5.3-codex", "supported_endpoints": []any{"/v1/responses"}},
+	}
+	got, err := ChooseModel(models, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "gpt-5.5" {
+		t.Fatalf("expected gpt-5.5, got %s", got)
+	}
+}
+
+func TestChooseModelWillPickFutureGPTVersion(t *testing.T) {
+	models := []Model{
+		{"id": "gpt-5.5", "supported_endpoints": []any{"/v1/responses"}},
+		{"id": "gpt-5.6", "supported_endpoints": []any{"/v1/responses"}},
+	}
+	got, err := ChooseModel(models, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "gpt-5.6" {
+		t.Fatalf("expected gpt-5.6, got %s", got)
+	}
+}
+
+func TestChooseModelPrefersCodexVariantForSameGPTVersion(t *testing.T) {
+	models := []Model{
+		{"id": "gpt-5.5", "supported_endpoints": []any{"/v1/responses"}},
+		{"id": "gpt-5.5-codex", "supported_endpoints": []any{"/v1/responses"}},
+	}
+	got, err := ChooseModel(models, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "gpt-5.5-codex" {
+		t.Fatalf("expected gpt-5.5-codex, got %s", got)
+	}
+}
+
+func TestChooseModelSkipsMiniForDefault(t *testing.T) {
+	models := []Model{
+		{"id": "gpt-5.6-mini", "supported_endpoints": []any{"/v1/responses"}},
+		{"id": "gpt-5.5", "supported_endpoints": []any{"/v1/responses"}},
+	}
+	got, err := ChooseModel(models, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "gpt-5.5" {
+		t.Fatalf("expected gpt-5.5, got %s", got)
+	}
+}
+
 func TestReasoningEffortsPreservesExplicitXHigh(t *testing.T) {
 	model := Model{
 		"id": "gpt-5.4",

@@ -7,20 +7,23 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/fermumen/codexcopilot/internal/auth"
 )
 
 var DefaultModelHints = []string{
-	"gpt-5.4-codex",
-	"gpt-5.4",
-	"gpt-5.3-codex",
-	"gpt-5.2-codex",
 	"gpt-5.1-codex",
 	"gpt-5-codex",
 	"gpt-5.1",
 	"gpt-5",
+}
+
+type gptVersion struct {
+	Parts []int
+	Codex bool
+	ID    string
 }
 
 type Model map[string]any
@@ -214,6 +217,84 @@ func CodexAppModels(models []Model) []Model {
 	return selected
 }
 
+func parseGPTVersion(id string) (gptVersion, bool) {
+	if !strings.HasPrefix(id, "gpt-") || strings.Contains(id, "-mini") {
+		return gptVersion{}, false
+	}
+	rest := strings.TrimPrefix(id, "gpt-")
+	codex := false
+	if strings.Contains(rest, "-codex") {
+		codex = true
+		rest = strings.Replace(rest, "-codex", "", 1)
+	}
+	versionPart, _, _ := strings.Cut(rest, "-")
+	pieces := strings.Split(versionPart, ".")
+	parts := make([]int, 0, len(pieces))
+	for _, piece := range pieces {
+		if piece == "" {
+			return gptVersion{}, false
+		}
+		value, err := strconv.Atoi(piece)
+		if err != nil {
+			return gptVersion{}, false
+		}
+		parts = append(parts, value)
+	}
+	if len(parts) == 0 {
+		return gptVersion{}, false
+	}
+	return gptVersion{Parts: parts, Codex: codex, ID: id}, true
+}
+
+func compareGPTVersion(a, b gptVersion) int {
+	max := len(a.Parts)
+	if len(b.Parts) > max {
+		max = len(b.Parts)
+	}
+	for i := 0; i < max; i++ {
+		var av, bv int
+		if i < len(a.Parts) {
+			av = a.Parts[i]
+		}
+		if i < len(b.Parts) {
+			bv = b.Parts[i]
+		}
+		if av > bv {
+			return 1
+		}
+		if av < bv {
+			return -1
+		}
+	}
+	if a.Codex && !b.Codex {
+		return 1
+	}
+	if !a.Codex && b.Codex {
+		return -1
+	}
+	return 0
+}
+
+func latestGPTModel(models []Model) string {
+	var best gptVersion
+	found := false
+	for _, model := range models {
+		id := stringValue(model, "id")
+		version, ok := parseGPTVersion(id)
+		if !ok {
+			continue
+		}
+		if !found || compareGPTVersion(version, best) > 0 {
+			best = version
+			found = true
+		}
+	}
+	if !found {
+		return ""
+	}
+	return best.ID
+}
+
 func ChooseModel(models []Model, requested string) (string, error) {
 	ids := map[string]bool{}
 	for _, model := range models {
@@ -226,6 +307,9 @@ func ChooseModel(models []Model, requested string) (string, error) {
 			return requested, nil
 		}
 		return "", fmt.Errorf("model %q was not returned by GitHub Copilot", requested)
+	}
+	if id := latestGPTModel(models); id != "" {
+		return id, nil
 	}
 	for _, hint := range DefaultModelHints {
 		if ids[hint] {
