@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	ProfileName  = "codexcopilot-codex-app"
-	ProviderName = "codexcopilot-codex-app"
+	ProfileName            = "codexcopilot-codex-app"
+	ProviderName           = "codexcopilot-codex-app"
+	ImageGenerationFeature = "image_generation"
 )
 
 var rootKeys = []string{"profile", "model", "model_provider", "model_catalog_json"}
@@ -31,7 +32,13 @@ type rootValue struct {
 }
 
 type restoreState struct {
-	Root map[string]rootValue `json:"root"`
+	Root     map[string]rootValue `json:"root"`
+	Features map[string]rawValue  `json:"features,omitempty"`
+}
+
+type rawValue struct {
+	Present bool   `json:"present"`
+	Raw     string `json:"raw,omitempty"`
 }
 
 func quote(value string) string {
@@ -111,16 +118,33 @@ func saveRestoreState(p paths.Paths, text string) error {
 	if _, err := os.Stat(p.RestoreFile); err == nil {
 		return nil
 	}
-	state := restoreState{Root: map[string]rootValue{}}
+	state := restoreState{Root: map[string]rootValue{}, Features: map[string]rawValue{}}
 	values := parseRootValues(text)
 	for _, key := range rootKeys {
 		state.Root[key] = values[key]
 	}
+	state.Features[ImageGenerationFeature] = parseTableRawValue(text, "[features]", ImageGenerationFeature)
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
 	return atomicWrite(p.RestoreFile, append(data, '\n'), 0o600)
+}
+
+func parseTableRawValue(text string, header string, key string) rawValue {
+	lines := strings.SplitAfter(text, "\n")
+	start, end, ok := sectionRange(lines, header)
+	if !ok {
+		return rawValue{}
+	}
+	pattern := regexp.MustCompile(`^\s*` + regexp.QuoteMeta(key) + `\s*=\s*(.*)\s*$`)
+	for _, line := range lines[start+1 : end] {
+		match := pattern.FindStringSubmatch(line)
+		if len(match) == 2 {
+			return rawValue{Present: true, Raw: strings.TrimSpace(match[1])}
+		}
+	}
+	return rawValue{}
 }
 
 func sectionRange(lines []string, header string) (int, int, bool) {
@@ -202,10 +226,89 @@ func profileConfigText(p paths.Paths, model string, normalizedBase string) strin
 		"model_provider = " + quote(ProviderName),
 		"model_catalog_json = " + quote(p.ModelCatalog),
 		"",
+		"[features]",
+		ImageGenerationFeature + " = false",
+		"",
 		"[model_providers." + ProviderName + "]",
 		providerSectionText(normalizedBase),
 		"",
 	}, "\n")
+}
+
+func setTableRawValues(text string, header string, values map[string]string) string {
+	lines := strings.SplitAfter(text, "\n")
+	start, end, ok := sectionRange(lines, header)
+	if !ok {
+		body := make([]string, 0, len(values))
+		for key, value := range values {
+			body = append(body, key+" = "+value)
+		}
+		sort.Strings(body)
+		return upsertSection(text, header, strings.Join(body, "\n"))
+	}
+	section := append([]string{}, lines[start+1:end]...)
+	pattern := regexp.MustCompile(`^\s*([A-Za-z0-9_-]+)\s*=`)
+	seen := map[string]bool{}
+	for i, line := range section {
+		match := pattern.FindStringSubmatch(line)
+		if len(match) == 2 {
+			if value, ok := values[match[1]]; ok {
+				if seen[match[1]] {
+					section[i] = ""
+				} else {
+					section[i] = match[1] + " = " + value + "\n"
+					seen[match[1]] = true
+				}
+			}
+		}
+	}
+	for key, value := range values {
+		if !seen[key] {
+			section = append(section, key+" = "+value+"\n")
+		}
+	}
+	return strings.Join(append(append(lines[:start+1], section...), lines[end:]...), "")
+}
+
+func restoreTableRawValues(text string, header string, saved map[string]rawValue) string {
+	if len(saved) == 0 {
+		return text
+	}
+	lines := strings.SplitAfter(text, "\n")
+	start, end, ok := sectionRange(lines, header)
+	if !ok {
+		return text
+	}
+	section := append([]string{}, lines[start+1:end]...)
+	pattern := regexp.MustCompile(`^\s*([A-Za-z0-9_-]+)\s*=`)
+	indexByKey := map[string]int{}
+	for i, line := range section {
+		match := pattern.FindStringSubmatch(line)
+		if len(match) == 2 {
+			if _, ok := saved[match[1]]; ok {
+				if _, seen := indexByKey[match[1]]; seen {
+					section[i] = ""
+				} else {
+					indexByKey[match[1]] = i
+				}
+			} else {
+				indexByKey[match[1]] = i
+			}
+		}
+	}
+	for key, state := range saved {
+		if state.Present {
+			line := key + " = " + state.Raw + "\n"
+			if index, ok := indexByKey[key]; ok {
+				section[index] = line
+			} else {
+				section = append(section, line)
+			}
+		} else if index, ok := indexByKey[key]; ok {
+			section[index] = ""
+		}
+	}
+	return strings.Join(append(append(lines[:start+1], section...), lines[end:]...), "")
 }
 
 func setRootValues(text string, values map[string]string) string {
@@ -305,6 +408,7 @@ func Configure(p paths.Paths, model string, models []copilot.Model, baseURL stri
 		"model_provider":     ProviderName,
 		"model_catalog_json": p.ModelCatalog,
 	})
+	text = setTableRawValues(text, "[features]", map[string]string{ImageGenerationFeature: "false"})
 	text = upsertSection(text, "[model_providers."+ProviderName+"]", providerSectionText(normalizedBase))
 	if err := atomicWrite(p.ProfileConfig, []byte(profileConfigText(p, model, normalizedBase)), 0o644); err != nil {
 		return err
@@ -329,6 +433,7 @@ func Restore(p paths.Paths) (bool, error) {
 			return false, err
 		}
 		text = restoreRootValues(text, state.Root)
+		text = restoreTableRawValues(text, "[features]", state.Features)
 	} else if strings.Contains(text, `profile = "`+ProfileName+`"`) {
 		text = restoreRootValues(text, map[string]rootValue{})
 	}
