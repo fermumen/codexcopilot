@@ -171,24 +171,26 @@ Current Codex no longer accepts legacy root `profile = "..."` selection in `~/.c
 
 The proxy stays in the foreground. When the launcher exits, it restores the previous Codex provider settings and removes the generated profile file.
 
-## Standalone Responses Server
+## Managed Responses Server
 
-To run only the local OpenAI-compatible Responses proxy without writing Codex App config or launching Codex App:
+To make GitHub Copilot the local Codex default provider while a foreground server is running:
 
 ```bash
 ./bin/codexcopilot responses-server
 ```
 
-This mode is useful when another OpenAI-compatible client already has its provider config, or when you want to manage Codex App config separately. It still uses the saved GitHub Copilot login and listens on:
+This command starts the Copilot-backed OpenAI Responses proxy, patches local Codex provider settings, and restores the previous Codex config when the process exits. Leave it running while Codex CLI, Codex App, or a remote app session should use GitHub Copilot.
+
+By default it listens on:
 
 ```text
 http://127.0.0.1:11435/v1/
 ```
 
-Change the bind address with:
+Change the bind address or selected model with:
 
 ```bash
-./bin/codexcopilot responses-server --host 0.0.0.0 --port 11435
+./bin/codexcopilot responses-server --host 0.0.0.0 --port 11435 --model gpt-5.4
 ```
 
 ## Headless Codex Wrapper
@@ -229,31 +231,31 @@ By default the service runs:
 codexcopilot responses-server --host 127.0.0.1 --port 11435
 ```
 
-For a server, WSL instance, or VM that should accept connections from another machine:
+For a server, WSL instance, or VM that should accept connections from another machine, optionally pinning a model:
 
 ```bash
-codexcopilot install-server-service --host 0.0.0.0 --port 11435
+codexcopilot install-server-service --host 0.0.0.0 --port 11435 --model gpt-5.4
 ```
 
-The command requires a saved Copilot login, writes `~/.config/systemd/user/codexcopilot.service`, runs `systemctl --user daemon-reload`, and enables the service with `systemctl --user enable --now codexcopilot.service`.
+The command requires a saved Copilot login, writes `~/.config/systemd/user/codexcopilot.service`, runs `systemctl --user daemon-reload`, and enables the service with `systemctl --user enable --now codexcopilot.service`. Starting the service patches Codex provider settings; stopping it restores the previous config.
 
 This is a user service. On systems where user services should start before login, enable linger separately with your system administrator's preferred policy.
 
 ## Provider Patch
 
-To patch local Codex provider settings without starting the server or launching Codex App:
+For advanced/manual setups, patch local Codex provider settings against an already-running proxy:
 
 ```bash
 ./bin/codexcopilot provider patch
 ```
 
-By default this points Codex at the default local Responses server:
+By default this points Codex at:
 
 ```text
 http://127.0.0.1:11435/v1/
 ```
 
-For a remote server:
+For a remote proxy:
 
 ```bash
 ./bin/codexcopilot provider patch --base-url http://SERVER:11435/v1/
@@ -261,7 +263,7 @@ For a remote server:
 
 `provider patch` fetches models from the configured proxy's `/models` endpoint, writes the local Codex model catalog, and makes the provider active. This command does not need GitHub Copilot auth on the patching machine.
 
-Restore previous Codex provider settings:
+Restore previous Codex provider settings manually:
 
 ```bash
 ./bin/codexcopilot provider restore
@@ -359,9 +361,9 @@ For upstream Copilot requests it adds:
 
 ```text
 Authorization: Bearer <saved GitHub OAuth token>
-User-Agent: codexcopilot/0.3.0
-Editor-Version: codexcopilot/0.3.0
-Editor-Plugin-Version: codexcopilot/0.3.0
+User-Agent: codexcopilot/0.4.0
+Editor-Version: codexcopilot/0.4.0
+Editor-Plugin-Version: codexcopilot/0.4.0
 Copilot-Integration-Id: vscode-chat
 Openai-Intent: conversation-edits
 X-Initiator: user|agent
@@ -448,7 +450,7 @@ The project intentionally avoids external Go dependencies so it can compile as a
 ## Current Constraints
 
 - Automatic Codex App launch is implemented for macOS and Windows only.
-- Linux and remote-server users should use `codexcopilot codex` for temporary headless CLI sessions, or `responses-server` plus `provider patch` for persistent/manual setups.
+- Linux and remote-server users should use `codexcopilot codex` for one temporary Codex CLI invocation, or `responses-server` for a managed default-provider server that restores config on exit.
 - The proxy must remain running while Codex App uses the provider.
 - This does not implement a native Codex App provider. It adapts Codex App's provider wire protocol to GitHub Copilot.
 - You need an active GitHub Copilot subscription, and model availability depends on your GitHub account and organization settings.
@@ -462,7 +464,7 @@ On the Linux, WSL, or remote server that owns the GitHub Copilot login, the simp
 ./bin/codexcopilot codex
 ```
 
-For a persistent server that another machine will use:
+For a managed server that makes Copilot the default provider while it runs:
 
 ```bash
 ./bin/codexcopilot auth login
@@ -476,7 +478,7 @@ codexcopilot auth login
 codexcopilot install-server-service --host 0.0.0.0 --port 11435
 ```
 
-On the machine running Codex App:
+On a separate machine running Codex App, use the advanced manual patch command while the server is running:
 
 ```bash
 ./bin/codexcopilot provider patch --base-url http://SERVER:11435/v1/

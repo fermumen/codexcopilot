@@ -60,7 +60,7 @@ func requestJSON(method, url string, in any, out any) error {
 		return err
 	}
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", "codexcopilot/0.3.0")
+	req.Header.Set("User-Agent", "codexcopilot/0.4.0")
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

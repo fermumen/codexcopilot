@@ -9,7 +9,26 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/fermumen/codexcopilot/internal/auth"
+	"github.com/fermumen/codexcopilot/internal/copilot"
+	"github.com/fermumen/codexcopilot/internal/paths"
 )
+
+func testCommandPaths(root string) paths.Paths {
+	codexDir := filepath.Join(root, ".codex")
+	stateDir := filepath.Join(root, ".config", "codexcopilot")
+	return paths.Paths{
+		CodexDir:      codexDir,
+		CodexConfig:   filepath.Join(codexDir, "config.toml"),
+		ProfileConfig: filepath.Join(codexDir, "codexcopilot-codex-app.config.toml"),
+		ModelCatalog:  filepath.Join(codexDir, "codexcopilot-models.json"),
+		StateDir:      stateDir,
+		AuthFile:      filepath.Join(stateDir, "auth.json"),
+		RestoreFile:   filepath.Join(stateDir, "codex-app-restore.json"),
+		BackupDir:     filepath.Join(stateDir, "backup"),
+	}
+}
 
 func TestSplitLaunchArgsAllowsFlagsAfterTarget(t *testing.T) {
 	flags, target := splitLaunchArgs([]string{"codex-app", "--model", "gpt-5.4"})
@@ -96,14 +115,74 @@ func TestProviderPatchUsesBaseURLModels(t *testing.T) {
 	}
 }
 
+func TestManagedResponsesServerPatchesAndRestores(t *testing.T) {
+	root := t.TempDir()
+	p := testCommandPaths(root)
+	if err := os.MkdirAll(p.CodexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.CodexConfig, []byte(`model = "gpt-5.5"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	previousWait := waitForServerShutdown
+	waitForServerShutdown = func(server *http.Server, errs <-chan error) error {
+		data, err := os.ReadFile(p.CodexConfig)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		if !strings.Contains(text, `model_provider = "codexcopilot-codex-app"`) {
+			t.Fatalf("config was not patched while server was running:\n%s", text)
+		}
+		if _, err := os.Stat(p.ProfileConfig); err != nil {
+			t.Fatal(err)
+		}
+		_ = server.Close()
+		err = <-errs
+		if err == http.ErrServerClosed {
+			return nil
+		}
+		return err
+	}
+	t.Cleanup(func() {
+		waitForServerShutdown = previousWait
+	})
+
+	models := []copilot.Model{{"id": "gpt-5.4", "supported_endpoints": []any{"/v1/responses"}, "model_picker_enabled": true}}
+	if err := runManagedResponsesServer(p, auth.Auth{AccessToken: "test-token"}, models, "gpt-5.4", "127.0.0.1", 0); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(p.CodexConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `model = "gpt-5.5"`) {
+		t.Fatalf("previous model was not restored:\n%s", text)
+	}
+	if strings.Contains(text, "codexcopilot-codex-app") {
+		t.Fatalf("managed provider remained after restore:\n%s", text)
+	}
+	if _, err := os.Stat(p.ProfileConfig); !os.IsNotExist(err) {
+		t.Fatalf("expected profile config to be removed, got %v", err)
+	}
+}
+
 func TestServerServiceUnit(t *testing.T) {
-	unit := serverServiceUnit(`/opt/codex copilot/codex%copilot`, "0.0.0.0", 11435)
+	unit := serverServiceUnit(`/opt/codex copilot/codex%copilot`, "0.0.0.0", 11435, "")
 	want := `ExecStart="/opt/codex copilot/codex%%copilot" responses-server --host "0.0.0.0" --port 11435`
 	if !strings.Contains(unit, want) {
 		t.Fatalf("unit missing ExecStart:\n%s", unit)
 	}
 	if !strings.Contains(unit, "Restart=on-failure") {
 		t.Fatalf("unit missing restart policy:\n%s", unit)
+	}
+	withModel := serverServiceUnit(`/usr/local/bin/codexcopilot`, "127.0.0.1", 11435, "gpt-5.4")
+	if !strings.Contains(withModel, `--model "gpt-5.4"`) {
+		t.Fatalf("unit missing model flag:\n%s", withModel)
 	}
 }
 

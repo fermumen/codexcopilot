@@ -138,19 +138,22 @@ func commandModels(args []string) error {
 
 func commandServe(args []string) error {
 	fs := flag.NewFlagSet("responses-server", flag.ExitOnError)
+	model := fs.String("model", "", "model id")
 	host := fs.String("host", defaultHost, "listen host")
 	port := fs.Int("port", defaultPort, "listen port")
 	clientID := fs.String("client-id", "", "GitHub OAuth client id")
 	enterpriseURL := fs.String("enterprise-url", "", "GitHub Enterprise URL or domain")
 	_ = fs.Parse(args)
-	a, err := ensureAuth(paths.Default(), *clientID, *enterpriseURL)
+	p := paths.Default()
+	a, err := ensureAuth(p, *clientID, *enterpriseURL)
 	if err != nil {
 		return err
 	}
-	addr := fmt.Sprintf("%s:%d", *host, *port)
-	fmt.Printf("GitHub Copilot Responses proxy listening on http://%s/v1/\n", addr)
-	fmt.Println("This mode does not write Codex App config or launch Codex App.")
-	return proxy.New(a).ListenAndServe(addr)
+	remoteModels, err := copilot.FetchModels(a)
+	if err != nil {
+		return err
+	}
+	return runManagedResponsesServer(p, a, remoteModels, *model, *host, *port)
 }
 
 func systemdQuote(arg string) string {
@@ -160,7 +163,18 @@ func systemdQuote(arg string) string {
 	return `"` + arg + `"`
 }
 
-func serverServiceUnit(binaryPath, host string, port int) string {
+func serverServiceUnit(binaryPath, host string, port int, model string) string {
+	args := []string{
+		systemdQuote(binaryPath),
+		"responses-server",
+		"--host",
+		systemdQuote(host),
+		"--port",
+		fmt.Sprint(port),
+	}
+	if model != "" {
+		args = append(args, "--model", systemdQuote(model))
+	}
 	return strings.Join([]string{
 		"[Unit]",
 		"Description=codexcopilot Responses proxy",
@@ -168,14 +182,7 @@ func serverServiceUnit(binaryPath, host string, port int) string {
 		"Wants=network-online.target",
 		"",
 		"[Service]",
-		"ExecStart=" + strings.Join([]string{
-			systemdQuote(binaryPath),
-			"responses-server",
-			"--host",
-			systemdQuote(host),
-			"--port",
-			fmt.Sprint(port),
-		}, " "),
+		"ExecStart=" + strings.Join(args, " "),
 		"Restart=on-failure",
 		"RestartSec=2",
 		"",
@@ -190,6 +197,7 @@ func commandInstallServerService(args []string) error {
 		return fmt.Errorf("install-server-service is only supported on Linux systems with systemd")
 	}
 	fs := flag.NewFlagSet("install-server-service", flag.ExitOnError)
+	model := fs.String("model", "", "model id")
 	host := fs.String("host", defaultHost, "listen host")
 	port := fs.Int("port", defaultPort, "listen port")
 	binaryPath := fs.String("binary", "", "codexcopilot executable path")
@@ -224,7 +232,7 @@ func commandInstallServerService(args []string) error {
 	if err := os.MkdirAll(serviceDir, 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(servicePath, []byte(serverServiceUnit(exe, *host, *port)), 0o644); err != nil {
+	if err := os.WriteFile(servicePath, []byte(serverServiceUnit(exe, *host, *port, *model)), 0o644); err != nil {
 		return err
 	}
 	if out, err := runExternalCommand("systemctl", "--user", "daemon-reload"); err != nil {
@@ -332,6 +340,47 @@ func restoreProvider(p paths.Paths) {
 	if _, err := codex.Restore(p); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to restore Codex provider settings: %v\n", err)
 	}
+}
+
+var waitForServerShutdown = waitForServer
+
+func waitForServer(server *http.Server, errs <-chan error) error {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	select {
+	case <-signals:
+		if err := server.Close(); err != nil {
+			return err
+		}
+		err := <-errs
+		if err == http.ErrServerClosed {
+			return nil
+		}
+		return err
+	case err := <-errs:
+		if err == http.ErrServerClosed {
+			return nil
+		}
+		return err
+	}
+}
+
+func runManagedResponsesServer(p paths.Paths, a auth.Auth, remoteModels []copilot.Model, requestedModel string, host string, port int) error {
+	server, errs, baseURL, err := startProxy(a, host, port)
+	if err != nil {
+		return err
+	}
+	selected, err := configureProviderFromModels(p, baseURL, requestedModel, remoteModels)
+	if err != nil {
+		_ = server.Close()
+		return err
+	}
+	defer restoreProvider(p)
+	fmt.Printf("GitHub Copilot Responses proxy listening on %s/v1/\n", baseURL)
+	fmt.Printf("Patched Codex default provider for %q.\n", selected)
+	fmt.Println("Leave this process running while Codex uses GitHub Copilot. Config will be restored on exit.")
+	return waitForServerShutdown(server, errs)
 }
 
 func commandCodex(args []string) error {
