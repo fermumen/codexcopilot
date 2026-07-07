@@ -43,9 +43,19 @@ func ConfigHome() string {
 	return filepath.Join(home, ".config")
 }
 
-func Default() Paths {
+// CodexHome resolves the Codex config directory. Like the Codex CLI itself,
+// a non-empty CODEX_HOME env var is used as the directory path directly;
+// otherwise it defaults to ~/.codex.
+func CodexHome() string {
+	if v := os.Getenv("CODEX_HOME"); v != "" {
+		return filepath.Clean(v)
+	}
 	home, _ := os.UserHomeDir()
-	codexDir := filepath.Join(home, ".codex")
+	return filepath.Join(home, ".codex")
+}
+
+func Default() Paths {
+	codexDir := CodexHome()
 	stateDir := filepath.Join(ConfigHome(), AppName)
 	return Paths{
 		CodexDir:      codexDir,

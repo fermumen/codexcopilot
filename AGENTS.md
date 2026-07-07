@@ -12,7 +12,7 @@
 - Release workflow tests first, then cross-builds tagged `v*` releases with `CGO_ENABLED=0` for linux/darwin/windows assets.
 
 ## Runtime Gotchas
-- Commands that configure Codex write real user files: `~/.codex/config.toml`, `~/.codex/codexcopilot-codex-app.config.toml`, `~/.codex/codexcopilot-models.json`, plus state under `<config-home>/codexcopilot/`. In tests or manual experiments, set temp `HOME` and `XDG_CONFIG_HOME`.
+- Commands that configure Codex write real user files: `~/.codex/config.toml`, `~/.codex/codexcopilot-codex-app.config.toml`, `~/.codex/codexcopilot-models.json`, plus state under `<config-home>/codexcopilot/`. The Codex dir honors `CODEX_HOME` (used as the directory itself, like Codex CLI), falling back to `~/.codex`. In tests or manual experiments, set temp `HOME`, `CODEX_HOME`, and `XDG_CONFIG_HOME`.
 - Current Codex uses profile-v2 files plus `codex --profile codexcopilot-codex-app`; do not reintroduce legacy root `profile = "..."` settings.
 - Provider config must keep `wire_api = "responses"` and a base URL normalized to end in `/v1/`; the default local proxy is `http://127.0.0.1:11435/v1/`.
 - The proxy maps `/v1/models` to Copilot `/models` and `/v1/responses` to `/responses`, owns Copilot auth headers, and strips incoming `Authorization` and `X-Initiator`.

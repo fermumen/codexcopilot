@@ -318,6 +318,8 @@ The tool writes:
 - macOS: `~/Library/Application Support`
 - Windows: `%APPDATA%`
 
+The `~/.codex` directory honors `CODEX_HOME`, matching Codex CLI behavior: when set, `CODEX_HOME` is used as the Codex config directory itself (for example `CODEX_HOME=/mnt/c/Users/you/.codex`), otherwise it falls back to `~/.codex`.
+
 Auth tokens are written with user-only permissions where the platform supports it.
 
 ## Restore Behavior

@@ -91,6 +91,7 @@ func TestProviderPatchUsesBaseURLModels(t *testing.T) {
 
 	root := t.TempDir()
 	t.Setenv("HOME", root)
+	t.Setenv("CODEX_HOME", "")
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, ".config"))
 
 	if err := commandProvider([]string{"patch", "--base-url", server.URL + "/v1/", "--model", "gpt-5.4"}); err != nil {
