@@ -23,3 +23,4 @@
 - Model selection intentionally keeps only policy-enabled, picker-visible OpenAI models with Responses API support, then prefers the `internal/copilot.DefaultModelHints` order.
 - Reasoning levels come from Copilot metadata when present; fallback adds `xhigh` only for `gpt-5.4*` ids.
 - `internal/codex` edits TOML with line-oriented helpers, not a TOML parser; preserve unrelated user config and restore-state behavior when changing it.
+- Vanilla mode (opt-in with `--vanilla`) disables Codex extras: `[features]` `apps`/`plugins`/`workspace_dependencies`, root `web_search = "disabled"`, and `[skills.bundled] enabled = false`; `image_generation = false` is always written. `multi_agent` and `goals` stay enabled. All managed keys are captured in restore state.

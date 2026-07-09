@@ -239,6 +239,24 @@ codexcopilot install-server-service --host 0.0.0.0 --port 11435 --model gpt-5.4
 
 The command requires a saved Copilot login, writes `~/.config/systemd/user/codexcopilot.service`, runs `systemctl --user daemon-reload`, and enables the service with `systemctl --user enable --now codexcopilot.service`. Starting the service patches Codex provider settings; stopping it restores the previous config.
 
+If `CODEX_HOME` is set when `install-server-service` runs, the generated unit stores that value explicitly:
+
+```ini
+Environment="CODEX_HOME=/mnt/c/Users/you/.codex"
+```
+
+This matters on WSL and other systemd environments because user services do not necessarily inherit your interactive shell environment. To target a Windows Codex install from WSL, run:
+
+```bash
+CODEX_HOME=/mnt/c/Users/you/.codex codexcopilot install-server-service
+```
+
+Check the generated unit if you are unsure which Codex home the service will patch:
+
+```bash
+systemctl --user cat codexcopilot
+```
+
 This is a user service. On systems where user services should start before login, enable linger separately with your system administrator's preferred policy.
 
 ## Provider Patch
@@ -278,26 +296,50 @@ model = "<selected model>"
 model_provider = "codexcopilot-codex-app"
 model_catalog_json = "/home/you/.codex/codexcopilot-models.json"
 
+[features]
+image_generation = false
+
 [model_providers.codexcopilot-codex-app]
 name = "GitHub Copilot"
 base_url = "http://127.0.0.1:11435/v1/"
 wire_api = "responses"
 ```
 
-It also writes a Codex profile-v2 file at `~/.codex/codexcopilot-codex-app.config.toml` so current Codex CLI can be launched with `--profile codexcopilot-codex-app`:
+It also writes a Codex profile-v2 file at `~/.codex/codexcopilot-codex-app.config.toml` with the same settings so current Codex CLI can be launched with `--profile codexcopilot-codex-app`.
+
+`wire_api = "responses"` is important because Codex should send Responses API requests, not Chat Completions requests, for the selected models. `image_generation = false` is always written because Copilot rejects the image generation tool.
+
+### Vanilla Mode
+
+Pass `--vanilla` to `responses-server`, `codex`, `launch`, `provider patch`, or `install-server-service` to configure Codex as a plain coding agent without the extra default tooling Codex ships:
+
+```bash
+codexcopilot responses-server --vanilla
+```
+
+Vanilla mode additionally disables:
+
+- Codex Apps connectors MCP (`features.apps`): GitHub, Gmail, Google Drive, and similar connector tools plus their bundled skills
+- plugins (`features.plugins`)
+- bundled skills (`[skills.bundled] enabled = false`): `imagegen`, `openai-docs`, `plugin-creator`, and other Codex-shipped skill packages
+- web search (root `web_search = "disabled"`)
+- workspace dependency runtimes (`features.workspace_dependencies`)
+
+`multi_agent` and `goals` stay enabled. The extra config written in vanilla mode:
 
 ```toml
-model = "<selected model>"
-model_provider = "codexcopilot-codex-app"
-model_catalog_json = "/home/you/.codex/codexcopilot-models.json"
+web_search = "disabled"
 
-[model_providers.codexcopilot-codex-app]
-name = "GitHub Copilot"
-base_url = "http://127.0.0.1:11435/v1/"
-wire_api = "responses"
+[features]
+apps = false
+plugins = false
+workspace_dependencies = false
+
+[skills.bundled]
+enabled = false
 ```
 
-`wire_api = "responses"` is important because Codex should send Responses API requests, not Chat Completions requests, for the selected models.
+User-set values for these keys are recorded in restore state and put back by `provider restore`, on managed-server exit, or when re-patching without `--vanilla`.
 
 ## Files Touched
 
@@ -308,8 +350,8 @@ The tool writes:
 ~/.codex/codexcopilot-codex-app.config.toml
 ~/.codex/codexcopilot-models.json
 <config-home>/codexcopilot/auth.json
-<config-home>/codexcopilot/codex-app-restore.json
-<config-home>/codexcopilot/backup/
+<config-home>/codexcopilot/codex-<hash>/codex-app-restore.json
+<config-home>/codexcopilot/codex-<hash>/backup/
 ```
 
 `<config-home>` is:
@@ -318,7 +360,20 @@ The tool writes:
 - macOS: `~/Library/Application Support`
 - Windows: `%APPDATA%`
 
-The `~/.codex` directory honors `CODEX_HOME`, matching Codex CLI behavior: when set, `CODEX_HOME` is used as the Codex config directory itself (for example `CODEX_HOME=/mnt/c/Users/you/.codex`), otherwise it falls back to `~/.codex`.
+The `~/.codex` directory honors `CODEX_HOME`, matching Codex CLI behavior: when set, `CODEX_HOME` is used as the Codex config directory itself (for example `CODEX_HOME=/mnt/c/Users/you/.codex`), otherwise it falls back to `~/.codex`. The restore state and backups are scoped by a hash of the resolved Codex home so Linux `~/.codex` and a WSL-mounted Windows Codex home do not share restore state.
+
+Examples:
+
+```bash
+# Patch the default Linux Codex home.
+codexcopilot provider patch
+
+# Patch a Windows Codex home from WSL.
+CODEX_HOME=/mnt/c/Users/you/.codex codexcopilot provider patch
+
+# Install a persistent WSL user service that keeps targeting that Windows Codex home.
+CODEX_HOME=/mnt/c/Users/you/.codex codexcopilot install-server-service
+```
 
 Auth tokens are written with user-only permissions where the platform supports it.
 
@@ -331,7 +386,10 @@ profile
 model
 model_provider
 model_catalog_json
+web_search
 ```
+
+plus the previous `[features]` values for `apps`, `image_generation`, `plugins`, and `workspace_dependencies`, and the previous `[skills.bundled] enabled` value.
 
 The `profile` key is tracked only so codexcopilot can remove older legacy config it wrote before Codex switched to profile-v2 files. New patches do not write root `profile`.
 

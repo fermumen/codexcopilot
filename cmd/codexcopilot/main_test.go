@@ -152,7 +152,7 @@ func TestManagedResponsesServerPatchesAndRestores(t *testing.T) {
 	})
 
 	models := []copilot.Model{{"id": "gpt-5.4", "supported_endpoints": []any{"/v1/responses"}, "model_picker_enabled": true}}
-	if err := runManagedResponsesServer(p, auth.Auth{AccessToken: "test-token"}, models, "gpt-5.4", "127.0.0.1", 0); err != nil {
+	if err := runManagedResponsesServer(p, auth.Auth{AccessToken: "test-token"}, models, "gpt-5.4", "127.0.0.1", 0, true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -173,17 +173,23 @@ func TestManagedResponsesServerPatchesAndRestores(t *testing.T) {
 }
 
 func TestServerServiceUnit(t *testing.T) {
-	unit := serverServiceUnit(`/opt/codex copilot/codex%copilot`, "0.0.0.0", 11435, "", "")
+	unit := serverServiceUnit(`/opt/codex copilot/codex%copilot`, "0.0.0.0", 11435, "", "", false)
 	want := `ExecStart="/opt/codex copilot/codex%%copilot" responses-server --host "0.0.0.0" --port 11435`
 	if !strings.Contains(unit, want) {
 		t.Fatalf("unit missing ExecStart:\n%s", unit)
 	}
+	if strings.Contains(unit, "--vanilla") {
+		t.Fatalf("default unit should not add a vanilla flag:\n%s", unit)
+	}
 	if !strings.Contains(unit, "Restart=on-failure") {
 		t.Fatalf("unit missing restart policy:\n%s", unit)
 	}
-	withModel := serverServiceUnit(`/usr/local/bin/codexcopilot`, "127.0.0.1", 11435, "gpt-5.4", "/mnt/c/Users/FernandoMendez/.codex")
+	withModel := serverServiceUnit(`/usr/local/bin/codexcopilot`, "127.0.0.1", 11435, "gpt-5.4", "/mnt/c/Users/FernandoMendez/.codex", true)
 	if !strings.Contains(withModel, `--model "gpt-5.4"`) {
 		t.Fatalf("unit missing model flag:\n%s", withModel)
+	}
+	if !strings.Contains(withModel, `--vanilla`) {
+		t.Fatalf("unit missing vanilla opt-in flag:\n%s", withModel)
 	}
 	if !strings.Contains(withModel, `Environment="CODEX_HOME=/mnt/c/Users/FernandoMendez/.codex"`) {
 		t.Fatalf("unit missing CODEX_HOME environment:\n%s", withModel)

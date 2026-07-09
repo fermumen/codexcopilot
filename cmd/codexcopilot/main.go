@@ -23,10 +23,11 @@ import (
 )
 
 const (
-	defaultHost    = "127.0.0.1"
-	defaultPort    = 11435
-	defaultBaseURL = "http://127.0.0.1:11435/v1/"
-	serviceName    = "codexcopilot.service"
+	defaultHost      = "127.0.0.1"
+	defaultPort      = 11435
+	defaultBaseURL   = "http://127.0.0.1:11435/v1/"
+	serviceName      = "codexcopilot.service"
+	vanillaFlagUsage = "strip Codex extras (Codex Apps connectors, plugins, bundled skills, web search, workspace dependencies)"
 )
 
 func usage() {
@@ -143,6 +144,7 @@ func commandServe(args []string) error {
 	port := fs.Int("port", defaultPort, "listen port")
 	clientID := fs.String("client-id", "", "GitHub OAuth client id")
 	enterpriseURL := fs.String("enterprise-url", "", "GitHub Enterprise URL or domain")
+	vanilla := fs.Bool("vanilla", false, vanillaFlagUsage)
 	_ = fs.Parse(args)
 	p := paths.Default()
 	a, err := ensureAuth(p, *clientID, *enterpriseURL)
@@ -153,7 +155,7 @@ func commandServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	return runManagedResponsesServer(p, a, remoteModels, *model, *host, *port)
+	return runManagedResponsesServer(p, a, remoteModels, *model, *host, *port, *vanilla)
 }
 
 func systemdQuote(arg string) string {
@@ -163,7 +165,7 @@ func systemdQuote(arg string) string {
 	return `"` + arg + `"`
 }
 
-func serverServiceUnit(binaryPath, host string, port int, model string, codexHome string) string {
+func serverServiceUnit(binaryPath, host string, port int, model string, codexHome string, vanilla bool) string {
 	args := []string{
 		systemdQuote(binaryPath),
 		"responses-server",
@@ -174,6 +176,9 @@ func serverServiceUnit(binaryPath, host string, port int, model string, codexHom
 	}
 	if model != "" {
 		args = append(args, "--model", systemdQuote(model))
+	}
+	if vanilla {
+		args = append(args, "--vanilla")
 	}
 	lines := []string{
 		"[Unit]",
@@ -207,6 +212,7 @@ func commandInstallServerService(args []string) error {
 	host := fs.String("host", defaultHost, "listen host")
 	port := fs.Int("port", defaultPort, "listen port")
 	binaryPath := fs.String("binary", "", "codexcopilot executable path")
+	vanilla := fs.Bool("vanilla", false, vanillaFlagUsage)
 	_ = fs.Parse(args)
 	if *host == "" {
 		return fmt.Errorf("--host cannot be empty")
@@ -238,7 +244,7 @@ func commandInstallServerService(args []string) error {
 	if err := os.MkdirAll(serviceDir, 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(servicePath, []byte(serverServiceUnit(exe, *host, *port, *model, os.Getenv("CODEX_HOME"))), 0o644); err != nil {
+	if err := os.WriteFile(servicePath, []byte(serverServiceUnit(exe, *host, *port, *model, os.Getenv("CODEX_HOME"), *vanilla)), 0o644); err != nil {
 		return err
 	}
 	if out, err := runExternalCommand("systemctl", "--user", "daemon-reload"); err != nil {
@@ -304,7 +310,7 @@ func splitLaunchArgs(args []string) ([]string, []string) {
 	return flagArgs, targetArgs
 }
 
-func configureProviderFromModels(p paths.Paths, baseURL string, requestedModel string, remoteModels []copilot.Model) (string, error) {
+func configureProviderFromModels(p paths.Paths, baseURL string, requestedModel string, remoteModels []copilot.Model, vanilla bool) (string, error) {
 	models := copilot.CodexAppModels(remoteModels)
 	if len(models) == 0 {
 		return "", fmt.Errorf("no OpenAI Responses API models usable by Codex were returned from %s", baseURL)
@@ -313,7 +319,7 @@ func configureProviderFromModels(p paths.Paths, baseURL string, requestedModel s
 	if err != nil {
 		return "", err
 	}
-	if err := codex.Configure(p, selected, models, baseURL); err != nil {
+	if err := codex.Configure(p, selected, models, baseURL, vanilla); err != nil {
 		return "", err
 	}
 	return selected, nil
@@ -372,12 +378,12 @@ func waitForServer(server *http.Server, errs <-chan error) error {
 	}
 }
 
-func runManagedResponsesServer(p paths.Paths, a auth.Auth, remoteModels []copilot.Model, requestedModel string, host string, port int) error {
+func runManagedResponsesServer(p paths.Paths, a auth.Auth, remoteModels []copilot.Model, requestedModel string, host string, port int, vanilla bool) error {
 	server, errs, baseURL, err := startProxy(a, host, port)
 	if err != nil {
 		return err
 	}
-	selected, err := configureProviderFromModels(p, baseURL, requestedModel, remoteModels)
+	selected, err := configureProviderFromModels(p, baseURL, requestedModel, remoteModels, vanilla)
 	if err != nil {
 		_ = server.Close()
 		return err
@@ -398,6 +404,7 @@ func commandCodex(args []string) error {
 	clientID := fs.String("client-id", "", "GitHub OAuth client id")
 	enterpriseURL := fs.String("enterprise-url", "", "GitHub Enterprise URL or domain")
 	codexBin := fs.String("codex-bin", "codex", "codex executable path")
+	vanilla := fs.Bool("vanilla", false, vanillaFlagUsage)
 	_ = fs.Parse(toolArgs)
 	codexArgs = append(fs.Args(), codexArgs...)
 	p := paths.Default()
@@ -416,7 +423,7 @@ func commandCodex(args []string) error {
 	defer func() {
 		_ = server.Close()
 	}()
-	selected, err := configureProviderFromModels(p, baseURL, *model, remoteModels)
+	selected, err := configureProviderFromModels(p, baseURL, *model, remoteModels, *vanilla)
 	if err != nil {
 		_ = server.Close()
 		return err
@@ -447,13 +454,14 @@ func commandProvider(args []string) error {
 		fs := flag.NewFlagSet("provider patch", flag.ExitOnError)
 		baseURL := fs.String("base-url", defaultBaseURL, "OpenAI-compatible proxy base URL")
 		model := fs.String("model", "", "model id")
+		vanilla := fs.Bool("vanilla", false, vanillaFlagUsage)
 		_ = fs.Parse(args[1:])
 		normalizedBase := codex.NormalizeProviderBaseURL(*baseURL)
 		remoteModels, err := copilot.FetchModelsFromBaseURL(normalizedBase)
 		if err != nil {
 			return err
 		}
-		selected, err := configureProviderFromModels(p, normalizedBase, *model, remoteModels)
+		selected, err := configureProviderFromModels(p, normalizedBase, *model, remoteModels, *vanilla)
 		if err != nil {
 			return err
 		}
@@ -485,6 +493,7 @@ func commandLaunch(args []string) error {
 	port := fs.Int("port", defaultPort, "listen port")
 	clientID := fs.String("client-id", "", "GitHub OAuth client id")
 	enterpriseURL := fs.String("enterprise-url", "", "GitHub Enterprise URL or domain")
+	vanilla := fs.Bool("vanilla", false, vanillaFlagUsage)
 	flagArgs, targetArgs := splitLaunchArgs(args)
 	_ = fs.Parse(flagArgs)
 	target := strings.ToLower(strings.Join(targetArgs, "-"))
@@ -504,7 +513,7 @@ func commandLaunch(args []string) error {
 	if err != nil {
 		return err
 	}
-	selected, err := configureProviderFromModels(p, baseURL, *model, remoteModels)
+	selected, err := configureProviderFromModels(p, baseURL, *model, remoteModels, *vanilla)
 	if err != nil {
 		_ = server.Close()
 		return err

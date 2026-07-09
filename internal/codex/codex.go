@@ -22,9 +22,28 @@ const (
 	ProfileName            = "codexcopilot-codex-app"
 	ProviderName           = "codexcopilot-codex-app"
 	ImageGenerationFeature = "image_generation"
+	AppsFeature            = "apps"
+	PluginsFeature         = "plugins"
+	WorkspaceDepsFeature   = "workspace_dependencies"
+	WebSearchKey           = "web_search"
+
+	skillsBundledHeader  = "[skills.bundled]"
+	skillsBundledEnabled = "enabled"
+	skillsBundledState   = "skills.bundled"
 )
 
-var rootKeys = []string{"profile", "model", "model_provider", "model_catalog_json"}
+var rootKeys = []string{"profile", "model", "model_provider", "model_catalog_json", WebSearchKey}
+
+// vanillaFeatures are the extra Codex feature flags disabled in vanilla mode so
+// Codex stays a plain coding agent: no Codex Apps connectors MCP, no plugin
+// catalog, and no workspace dependency runtimes. multi_agent and goals stay
+// enabled on purpose. image_generation is always disabled separately because
+// Copilot rejects the image generation tool.
+var vanillaFeatures = []string{AppsFeature, PluginsFeature, WorkspaceDepsFeature}
+
+// managedFeatures is every [features] key codexcopilot may write; restore
+// state captures all of them regardless of vanilla mode.
+var managedFeatures = append([]string{ImageGenerationFeature}, vanillaFeatures...)
 
 type rootValue struct {
 	Present bool   `json:"present"`
@@ -32,8 +51,38 @@ type rootValue struct {
 }
 
 type restoreState struct {
-	Root     map[string]rootValue `json:"root"`
-	Features map[string]rawValue  `json:"features,omitempty"`
+	Root     map[string]rootValue           `json:"root"`
+	Features map[string]rawValue            `json:"features,omitempty"`
+	Tables   map[string]map[string]rawValue `json:"tables,omitempty"`
+}
+
+// savedFeatures returns the saved [features] values with every managed key
+// present, so keys written by newer versions are removed on restore even when
+// the state file predates them.
+func (s restoreState) savedFeatures() map[string]rawValue {
+	saved := map[string]rawValue{}
+	for key, value := range s.Features {
+		saved[key] = value
+	}
+	for _, key := range managedFeatures {
+		if _, ok := saved[key]; !ok {
+			saved[key] = rawValue{}
+		}
+	}
+	return saved
+}
+
+func (s restoreState) savedTable(name string, keys ...string) map[string]rawValue {
+	saved := map[string]rawValue{}
+	for key, value := range s.Tables[name] {
+		saved[key] = value
+	}
+	for _, key := range keys {
+		if _, ok := saved[key]; !ok {
+			saved[key] = rawValue{}
+		}
+	}
+	return saved
 }
 
 type rawValue struct {
@@ -140,17 +189,34 @@ func saveRestoreState(p paths.Paths, text string) error {
 			return err
 		}
 	}
-	state := restoreState{Root: map[string]rootValue{}, Features: map[string]rawValue{}}
+	state := restoreState{Root: map[string]rootValue{}, Features: map[string]rawValue{}, Tables: map[string]map[string]rawValue{}}
 	values := parseRootValues(text)
 	for _, key := range rootKeys {
 		state.Root[key] = values[key]
 	}
-	state.Features[ImageGenerationFeature] = parseTableRawValue(text, "[features]", ImageGenerationFeature)
+	for _, key := range managedFeatures {
+		state.Features[key] = parseTableRawValue(text, "[features]", key)
+	}
+	state.Tables[skillsBundledState] = map[string]rawValue{
+		skillsBundledEnabled: parseTableRawValue(text, skillsBundledHeader, skillsBundledEnabled),
+	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
 	return atomicWrite(p.RestoreFile, append(data, '\n'), 0o600)
+}
+
+func loadRestoreState(p paths.Paths) *restoreState {
+	data, err := os.ReadFile(p.RestoreFile)
+	if err != nil {
+		return nil
+	}
+	var state restoreState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil
+	}
+	return &state
 }
 
 func parseTableRawValue(text string, header string, key string) rawValue {
@@ -204,6 +270,20 @@ func removeSection(text string, header string) string {
 	return spliceLines(lines, start, end, nil)
 }
 
+func removeSectionIfEmpty(text string, header string) string {
+	lines := strings.SplitAfter(text, "\n")
+	start, end, ok := sectionRange(lines, header)
+	if !ok {
+		return text
+	}
+	for _, line := range lines[start+1 : end] {
+		if strings.TrimSpace(line) != "" {
+			return text
+		}
+	}
+	return spliceLines(lines, start, end, nil)
+}
+
 func upsertSection(text string, header string, body string) string {
 	replacement := header + "\n" + strings.TrimRight(body, "\n") + "\n"
 	lines := strings.SplitAfter(text, "\n")
@@ -250,19 +330,41 @@ func providerSectionText(normalizedBase string) string {
 	}, "\n")
 }
 
-func profileConfigText(p paths.Paths, model string, normalizedBase string) string {
-	return strings.Join([]string{
+func profileConfigText(p paths.Paths, model string, normalizedBase string, vanilla bool) string {
+	lines := []string{
 		"model = " + quote(model),
 		"model_provider = " + quote(ProviderName),
 		"model_catalog_json = " + quote(p.ModelCatalog),
+	}
+	if vanilla {
+		lines = append(lines, WebSearchKey+" = "+quote("disabled"))
+	}
+	lines = append(lines,
 		"",
 		"[features]",
-		ImageGenerationFeature + " = false",
+	)
+	features := []string{ImageGenerationFeature}
+	if vanilla {
+		features = append(features, vanillaFeatures...)
+	}
+	sort.Strings(features)
+	for _, feature := range features {
+		lines = append(lines, feature+" = false")
+	}
+	if vanilla {
+		lines = append(lines,
+			"",
+			skillsBundledHeader,
+			skillsBundledEnabled+" = false",
+		)
+	}
+	lines = append(lines,
 		"",
-		"[model_providers." + ProviderName + "]",
+		"[model_providers."+ProviderName+"]",
 		providerSectionText(normalizedBase),
 		"",
-	}, "\n")
+	)
+	return strings.Join(lines, "\n")
 }
 
 func setTableRawValues(text string, header string, values map[string]string) string {
@@ -292,10 +394,15 @@ func setTableRawValues(text string, header string, values map[string]string) str
 			}
 		}
 	}
-	for key, value := range values {
+	missing := make([]string, 0, len(values))
+	for key := range values {
 		if !seen[key] {
-			section = append(section, key+" = "+value+"\n")
+			missing = append(missing, key)
 		}
+	}
+	sort.Strings(missing)
+	for _, key := range missing {
+		section = append(section, key+" = "+values[key]+"\n")
 	}
 	return spliceLines(lines, start+1, end, section)
 }
@@ -374,6 +481,10 @@ func setRootValues(text string, values map[string]string) string {
 }
 
 func restoreRootValues(text string, saved map[string]rootValue) string {
+	return restoreRootValuesFor(text, rootKeys, saved)
+}
+
+func restoreRootValuesFor(text string, keys []string, saved map[string]rootValue) string {
 	lines := strings.SplitAfter(text, "\n")
 	tableIndex := len(lines)
 	for i, line := range lines {
@@ -393,7 +504,7 @@ func restoreRootValues(text string, saved map[string]rootValue) string {
 			indexByKey[match[1]] = i
 		}
 	}
-	for _, key := range rootKeys {
+	for _, key := range keys {
 		state := saved[key]
 		if state.Present {
 			line := key + " = " + quote(state.Value) + "\n"
@@ -409,7 +520,11 @@ func restoreRootValues(text string, saved map[string]rootValue) string {
 	return strings.Join(append(root, rest...), "")
 }
 
-func Configure(p paths.Paths, model string, models []copilot.Model, baseURL string) error {
+// Configure patches the Codex config for the Copilot proxy provider. When
+// vanilla is true it also disables Codex extras that add default MCP/plugin
+// tooling: Codex Apps connectors, plugins, workspace dependencies, web search,
+// and bundled skills.
+func Configure(p paths.Paths, model string, models []copilot.Model, baseURL string, vanilla bool) error {
 	data, err := os.ReadFile(p.CodexConfig)
 	if errors.Is(err, os.ErrNotExist) {
 		data = nil
@@ -433,14 +548,36 @@ func Configure(p paths.Paths, model string, models []copilot.Model, baseURL stri
 	normalizedBase := NormalizeProviderBaseURL(baseURL)
 	text = removeRootValue(text, "profile")
 	text = removeSection(text, "[profiles."+ProfileName+"]")
-	text = setRootValues(text, map[string]string{
+	rootValues := map[string]string{
 		"model":              model,
 		"model_provider":     ProviderName,
 		"model_catalog_json": p.ModelCatalog,
-	})
-	text = setTableRawValues(text, "[features]", map[string]string{ImageGenerationFeature: "false"})
+	}
+	features := map[string]string{ImageGenerationFeature: "false"}
+	if vanilla {
+		rootValues[WebSearchKey] = "disabled"
+		for _, feature := range vanillaFeatures {
+			features[feature] = "false"
+		}
+	}
+	text = setRootValues(text, rootValues)
+	text = setTableRawValues(text, "[features]", features)
+	if vanilla {
+		text = setTableRawValues(text, skillsBundledHeader, map[string]string{skillsBundledEnabled: "false"})
+	} else if state := loadRestoreState(p); state != nil {
+		// Revert vanilla-only settings from an earlier vanilla configure.
+		text = restoreRootValuesFor(text, []string{WebSearchKey}, state.Root)
+		vanillaOnly := map[string]rawValue{}
+		saved := state.savedFeatures()
+		for _, feature := range vanillaFeatures {
+			vanillaOnly[feature] = saved[feature]
+		}
+		text = restoreTableRawValues(text, "[features]", vanillaOnly)
+		text = restoreTableRawValues(text, skillsBundledHeader, state.savedTable(skillsBundledState, skillsBundledEnabled))
+		text = removeSectionIfEmpty(text, skillsBundledHeader)
+	}
 	text = upsertSection(text, "[model_providers."+ProviderName+"]", providerSectionText(normalizedBase))
-	if err := atomicWrite(p.ProfileConfig, []byte(profileConfigText(p, model, normalizedBase)), 0o644); err != nil {
+	if err := atomicWrite(p.ProfileConfig, []byte(profileConfigText(p, model, normalizedBase, vanilla)), 0o644); err != nil {
 		return err
 	}
 	return atomicWrite(p.CodexConfig, []byte(text), 0o644)
@@ -475,7 +612,10 @@ func Restore(p paths.Paths) (bool, error) {
 			return false, err
 		}
 		text = restoreRootValues(text, state.Root)
-		text = restoreTableRawValues(text, "[features]", state.Features)
+		text = restoreTableRawValues(text, "[features]", state.savedFeatures())
+		text = removeSectionIfEmpty(text, "[features]")
+		text = restoreTableRawValues(text, skillsBundledHeader, state.savedTable(skillsBundledState, skillsBundledEnabled))
+		text = removeSectionIfEmpty(text, skillsBundledHeader)
 	} else if strings.Contains(text, `profile = "`+ProfileName+`"`) {
 		text = restoreRootValues(text, map[string]rootValue{})
 	}

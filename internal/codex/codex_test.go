@@ -42,7 +42,7 @@ func TestNormalizeProviderBaseURL(t *testing.T) {
 func TestConfigureWritesCodexCopilotProviderNames(t *testing.T) {
 	p := testPaths(t.TempDir())
 	models := []copilot.Model{{"id": "gpt-5.4", "supported_endpoints": []any{"/v1/responses"}}}
-	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/"); err != nil {
+	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/", true); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(p.CodexConfig)
@@ -53,13 +53,21 @@ func TestConfigureWritesCodexCopilotProviderNames(t *testing.T) {
 	if strings.Contains(text, `profile = "codexcopilot-codex-app"`) || strings.Contains(text, `[profiles.codexcopilot-codex-app]`) {
 		t.Fatalf("config contains legacy profile settings:\n%s", text)
 	}
-	for _, want := range []string{
-		`model_provider = "codexcopilot-codex-app"`,
+	vanillaSettings := []string{
 		`image_generation = false`,
+		`apps = false`,
+		`plugins = false`,
+		`workspace_dependencies = false`,
+		`web_search = "disabled"`,
+		`[skills.bundled]`,
+		`enabled = false`,
+	}
+	for _, want := range append([]string{
+		`model_provider = "codexcopilot-codex-app"`,
 		`[model_providers.codexcopilot-codex-app]`,
 		`model_catalog_json = "` + p.ModelCatalog + `"`,
 		`base_url = "http://127.0.0.1:11435/v1/"`,
-	} {
+	}, vanillaSettings...) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("config missing %q:\n%s", want, text)
 		}
@@ -69,13 +77,12 @@ func TestConfigureWritesCodexCopilotProviderNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	profileText := string(profileData)
-	for _, want := range []string{
+	for _, want := range append([]string{
 		`model = "gpt-5.4"`,
 		`model_provider = "codexcopilot-codex-app"`,
-		`image_generation = false`,
 		`[model_providers.codexcopilot-codex-app]`,
 		`base_url = "http://127.0.0.1:11435/v1/"`,
-	} {
+	}, vanillaSettings...) {
 		if !strings.Contains(profileText, want) {
 			t.Fatalf("profile config missing %q:\n%s", want, profileText)
 		}
@@ -101,7 +108,7 @@ func TestRestoreRevertsGeneratedImageGenerationFeature(t *testing.T) {
 	if err := os.WriteFile(p.CodexConfig, []byte(initial), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/"); err != nil {
+	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/", true); err != nil {
 		t.Fatal(err)
 	}
 	configured, err := os.ReadFile(p.CodexConfig)
@@ -141,7 +148,7 @@ func TestRestorePreservesExistingImageGenerationFeature(t *testing.T) {
 	if err := os.WriteFile(p.CodexConfig, []byte(initial), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/"); err != nil {
+	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/", true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Restore(p); err != nil {
@@ -153,6 +160,150 @@ func TestRestorePreservesExistingImageGenerationFeature(t *testing.T) {
 	}
 	if !strings.Contains(string(restored), `image_generation = true`) {
 		t.Fatalf("restore should preserve existing image_generation setting:\n%s", restored)
+	}
+}
+
+func TestConfigureNonVanillaKeepsCodexDefaults(t *testing.T) {
+	p := testPaths(t.TempDir())
+	models := []copilot.Model{{"id": "gpt-5.4", "supported_endpoints": []any{"/v1/responses"}}}
+	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/", false); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{p.CodexConfig, p.ProfileConfig} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		if !strings.Contains(text, `image_generation = false`) {
+			t.Fatalf("%s missing image_generation override:\n%s", path, text)
+		}
+		for _, unwanted := range []string{
+			`apps = false`,
+			`plugins = false`,
+			`workspace_dependencies = false`,
+			`web_search`,
+			`[skills.bundled]`,
+		} {
+			if strings.Contains(text, unwanted) {
+				t.Fatalf("%s should not contain %q without vanilla mode:\n%s", path, unwanted, text)
+			}
+		}
+	}
+}
+
+func TestConfigureVanillaOverridesAndRestoresUserSettings(t *testing.T) {
+	p := testPaths(t.TempDir())
+	models := []copilot.Model{{"id": "gpt-5.4", "supported_endpoints": []any{"/v1/responses"}}}
+	initial := strings.Join([]string{
+		`model = "gpt-5.5"`,
+		`web_search = "live"`,
+		``,
+		`[features]`,
+		`apps = true`,
+		`multi_agent = false`,
+		``,
+		`[skills.bundled]`,
+		`enabled = true`,
+		``,
+	}, "\n")
+	if err := os.MkdirAll(filepath.Dir(p.CodexConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.CodexConfig, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/", true); err != nil {
+		t.Fatal(err)
+	}
+	configured, err := os.ReadFile(p.CodexConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(configured)
+	for _, want := range []string{`web_search = "disabled"`, `apps = false`, `enabled = false`, `multi_agent = false`} {
+		if got := strings.Count(text, want); got != 1 {
+			t.Fatalf("expected one %q, got %d:\n%s", want, got, text)
+		}
+	}
+	if strings.Contains(text, `web_search = "live"`) || strings.Contains(text, `apps = true`) || strings.Contains(text, `enabled = true`) {
+		t.Fatalf("configure left user values in place:\n%s", text)
+	}
+	if _, err := Restore(p); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := os.ReadFile(p.CodexConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = string(restored)
+	for _, want := range []string{`web_search = "live"`, `apps = true`, `multi_agent = false`, "[skills.bundled]", `enabled = true`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("restore should recover %q:\n%s", want, text)
+		}
+	}
+	for _, unwanted := range []string{`plugins = false`, `workspace_dependencies = false`, `web_search = "disabled"`} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("restore left generated %q behind:\n%s", unwanted, text)
+		}
+	}
+}
+
+func TestRestoreRemovesGeneratedVanillaSettings(t *testing.T) {
+	p := testPaths(t.TempDir())
+	models := []copilot.Model{{"id": "gpt-5.4", "supported_endpoints": []any{"/v1/responses"}}}
+	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Restore(p); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := os.ReadFile(p.CodexConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(restored)
+	for _, unwanted := range []string{`apps`, `plugins`, `workspace_dependencies`, `web_search`, `[skills.bundled]`, `image_generation`} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("restore left generated %q behind:\n%s", unwanted, text)
+		}
+	}
+}
+
+func TestConfigureNonVanillaRevertsEarlierVanillaConfigure(t *testing.T) {
+	p := testPaths(t.TempDir())
+	models := []copilot.Model{{"id": "gpt-5.4", "supported_endpoints": []any{"/v1/responses"}}}
+	initial := strings.Join([]string{
+		`model = "gpt-5.5"`,
+		``,
+		`[features]`,
+		`multi_agent = true`,
+		``,
+	}, "\n")
+	if err := os.MkdirAll(filepath.Dir(p.CodexConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.CodexConfig, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/", false); err != nil {
+		t.Fatal(err)
+	}
+	configured, err := os.ReadFile(p.CodexConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(configured)
+	for _, unwanted := range []string{`apps = false`, `plugins = false`, `workspace_dependencies = false`, `web_search`, `[skills.bundled]`} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("non-vanilla configure left %q behind:\n%s", unwanted, text)
+		}
+	}
+	if !strings.Contains(text, `image_generation = false`) || !strings.Contains(text, `multi_agent = true`) {
+		t.Fatalf("non-vanilla configure lost expected settings:\n%s", text)
 	}
 }
 
@@ -172,7 +323,7 @@ func TestConfigureCollapsesDuplicateImageGenerationFeature(t *testing.T) {
 	if err := os.WriteFile(p.CodexConfig, []byte(initial), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/"); err != nil {
+	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/", true); err != nil {
 		t.Fatal(err)
 	}
 	configured, err := os.ReadFile(p.CodexConfig)
@@ -205,7 +356,7 @@ func TestConfigurePreservesFollowingSections(t *testing.T) {
 	if err := os.WriteFile(p.CodexConfig, []byte(initial), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/"); err != nil {
+	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/", true); err != nil {
 		t.Fatal(err)
 	}
 	configured, err := os.ReadFile(p.CodexConfig)
@@ -249,7 +400,7 @@ func TestConfigureMigratesLegacyRestoreStateForActivePatch(t *testing.T) {
 	if err := os.WriteFile(legacyRestore, legacyData, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/"); err != nil {
+	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/", true); err != nil {
 		t.Fatal(err)
 	}
 	scopedData, err := os.ReadFile(p.RestoreFile)
@@ -269,9 +420,14 @@ func TestRestoreUsesLegacyRestoreStateWhenScopedMissing(t *testing.T) {
 		`model = "gpt-5.4"`,
 		`model_provider = "codexcopilot-codex-app"`,
 		`model_catalog_json = "` + p.ModelCatalog + `"`,
+		`web_search = "disabled"`,
 		``,
 		`[features]`,
 		`image_generation = false`,
+		`apps = false`,
+		``,
+		`[skills.bundled]`,
+		`enabled = false`,
 		``,
 		`[model_providers.codexcopilot-codex-app]`,
 		`name = "GitHub Copilot"`,
@@ -317,6 +473,11 @@ func TestRestoreUsesLegacyRestoreStateWhenScopedMissing(t *testing.T) {
 	if strings.Contains(text, ProviderName) {
 		t.Fatalf("provider settings should be removed:\n%s", text)
 	}
+	for _, unwanted := range []string{`apps = false`, `web_search`, `[skills.bundled]`} {
+		if strings.Contains(text, unwanted) {
+			t.Fatalf("legacy restore should drop generated vanilla settings %q:\n%s", unwanted, text)
+		}
+	}
 	if _, err := os.Stat(legacyRestore); !os.IsNotExist(err) {
 		t.Fatalf("expected legacy restore file to be removed, got %v", err)
 	}
@@ -331,7 +492,7 @@ func TestRestoreUsesLegacyRestoreStateWhenScopedMissing(t *testing.T) {
 func TestRestoreRemovesGeneratedProfileConfig(t *testing.T) {
 	p := testPaths(t.TempDir())
 	models := []copilot.Model{{"id": "gpt-5.4", "supported_endpoints": []any{"/v1/responses"}}}
-	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/"); err != nil {
+	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/", true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(p.ProfileConfig); err != nil {
