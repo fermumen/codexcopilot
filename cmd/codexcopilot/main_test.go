@@ -173,7 +173,7 @@ func TestManagedResponsesServerPatchesAndRestores(t *testing.T) {
 }
 
 func TestServerServiceUnit(t *testing.T) {
-	unit := serverServiceUnit(`/opt/codex copilot/codex%copilot`, "0.0.0.0", 11435, "")
+	unit := serverServiceUnit(`/opt/codex copilot/codex%copilot`, "0.0.0.0", 11435, "", "")
 	want := `ExecStart="/opt/codex copilot/codex%%copilot" responses-server --host "0.0.0.0" --port 11435`
 	if !strings.Contains(unit, want) {
 		t.Fatalf("unit missing ExecStart:\n%s", unit)
@@ -181,9 +181,12 @@ func TestServerServiceUnit(t *testing.T) {
 	if !strings.Contains(unit, "Restart=on-failure") {
 		t.Fatalf("unit missing restart policy:\n%s", unit)
 	}
-	withModel := serverServiceUnit(`/usr/local/bin/codexcopilot`, "127.0.0.1", 11435, "gpt-5.4")
+	withModel := serverServiceUnit(`/usr/local/bin/codexcopilot`, "127.0.0.1", 11435, "gpt-5.4", "/mnt/c/Users/FernandoMendez/.codex")
 	if !strings.Contains(withModel, `--model "gpt-5.4"`) {
 		t.Fatalf("unit missing model flag:\n%s", withModel)
+	}
+	if !strings.Contains(withModel, `Environment="CODEX_HOME=/mnt/c/Users/FernandoMendez/.codex"`) {
+		t.Fatalf("unit missing CODEX_HOME environment:\n%s", withModel)
 	}
 }
 
@@ -194,6 +197,7 @@ func TestInstallServerServiceWritesAndEnablesUserUnit(t *testing.T) {
 
 	root := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, ".config"))
+	t.Setenv("CODEX_HOME", filepath.Join(root, "custom-codex"))
 	authPath := filepath.Join(root, ".config", "codexcopilot", "auth.json")
 	if err := os.MkdirAll(filepath.Dir(authPath), 0o700); err != nil {
 		t.Fatal(err)
@@ -224,6 +228,9 @@ func TestInstallServerServiceWritesAndEnablesUserUnit(t *testing.T) {
 	text := string(data)
 	if !strings.Contains(text, `ExecStart="/usr/local/bin/codexcopilot" responses-server --host "0.0.0.0" --port 11436`) {
 		t.Fatalf("unexpected unit:\n%s", text)
+	}
+	if !strings.Contains(text, `Environment="CODEX_HOME=`+filepath.Join(root, "custom-codex")+`"`) {
+		t.Fatalf("unit missing CODEX_HOME environment:\n%s", text)
 	}
 	expectedCalls := []string{
 		"systemctl --user daemon-reload",

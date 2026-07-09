@@ -1,6 +1,8 @@
 package paths
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -54,9 +56,15 @@ func CodexHome() string {
 	return filepath.Join(home, ".codex")
 }
 
+func codexStateDir(stateDir string, codexDir string) string {
+	sum := sha256.Sum256([]byte(filepath.Clean(codexDir)))
+	return filepath.Join(stateDir, "codex-"+hex.EncodeToString(sum[:8]))
+}
+
 func Default() Paths {
 	codexDir := CodexHome()
 	stateDir := filepath.Join(ConfigHome(), AppName)
+	codexStateDir := codexStateDir(stateDir, codexDir)
 	return Paths{
 		CodexDir:      codexDir,
 		CodexConfig:   filepath.Join(codexDir, ConfigFile),
@@ -64,7 +72,7 @@ func Default() Paths {
 		ModelCatalog:  filepath.Join(codexDir, CatalogName),
 		StateDir:      stateDir,
 		AuthFile:      filepath.Join(stateDir, AuthFileName),
-		RestoreFile:   filepath.Join(stateDir, RestoreFileName),
-		BackupDir:     filepath.Join(stateDir, "backup"),
+		RestoreFile:   filepath.Join(codexStateDir, RestoreFileName),
+		BackupDir:     filepath.Join(codexStateDir, "backup"),
 	}
 }

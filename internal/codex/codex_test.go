@@ -188,6 +188,146 @@ func TestConfigureCollapsesDuplicateImageGenerationFeature(t *testing.T) {
 	}
 }
 
+func TestConfigurePreservesFollowingSections(t *testing.T) {
+	p := testPaths(t.TempDir())
+	models := []copilot.Model{{"id": "gpt-5.4", "supported_endpoints": []any{"/v1/responses"}}}
+	initial := strings.Join([]string{
+		`[features]`,
+		`js_repl = false`,
+		``,
+		`[desktop]`,
+		`conversationDetailMode = "STEPS_COMMANDS"`,
+		``,
+	}, "\n")
+	if err := os.MkdirAll(filepath.Dir(p.CodexConfig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.CodexConfig, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/"); err != nil {
+		t.Fatal(err)
+	}
+	configured, err := os.ReadFile(p.CodexConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(configured)
+	if !strings.Contains(text, `[desktop]`) || !strings.Contains(text, `conversationDetailMode = "STEPS_COMMANDS"`) {
+		t.Fatalf("configure should preserve following sections:\n%s", text)
+	}
+	if got := strings.Count(text, `image_generation = false`); got != 1 {
+		t.Fatalf("expected one image_generation override, got %d:\n%s", got, text)
+	}
+}
+
+func TestConfigureMigratesLegacyRestoreStateForActivePatch(t *testing.T) {
+	p := testPaths(t.TempDir())
+	p.RestoreFile = filepath.Join(p.StateDir, "codex-scoped", "codex-app-restore.json")
+	p.BackupDir = filepath.Join(filepath.Dir(p.RestoreFile), "backup")
+	models := []copilot.Model{{"id": "gpt-5.4", "supported_endpoints": []any{"/v1/responses"}}}
+	patched := strings.Join([]string{
+		`model = "gpt-5.4"`,
+		`model_provider = "codexcopilot-codex-app"`,
+		`model_catalog_json = "` + p.ModelCatalog + `"`,
+		``,
+		`[features]`,
+		`image_generation = false`,
+		``,
+	}, "\n")
+	legacyRestore := filepath.Join(p.StateDir, paths.RestoreFileName)
+	legacyData := []byte(`{"root":{"model":{"present":true,"value":"gpt-5.5"},"model_catalog_json":{"present":false},"model_provider":{"present":false},"profile":{"present":false}},"features":{"image_generation":{"present":false}}}` + "\n")
+	if err := os.MkdirAll(p.CodexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(legacyRestore), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.CodexConfig, []byte(patched), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyRestore, legacyData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Configure(p, "gpt-5.4", models, "http://127.0.0.1:11435/v1/"); err != nil {
+		t.Fatal(err)
+	}
+	scopedData, err := os.ReadFile(p.RestoreFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(scopedData) != string(legacyData) {
+		t.Fatalf("scoped restore file did not preserve legacy state:\n%s", scopedData)
+	}
+}
+
+func TestRestoreUsesLegacyRestoreStateWhenScopedMissing(t *testing.T) {
+	p := testPaths(t.TempDir())
+	p.RestoreFile = filepath.Join(p.StateDir, "codex-scoped", "codex-app-restore.json")
+	p.BackupDir = filepath.Join(filepath.Dir(p.RestoreFile), "backup")
+	patched := strings.Join([]string{
+		`model = "gpt-5.4"`,
+		`model_provider = "codexcopilot-codex-app"`,
+		`model_catalog_json = "` + p.ModelCatalog + `"`,
+		``,
+		`[features]`,
+		`image_generation = false`,
+		``,
+		`[model_providers.codexcopilot-codex-app]`,
+		`name = "GitHub Copilot"`,
+		`base_url = "http://127.0.0.1:11435/v1/"`,
+		`wire_api = "responses"`,
+		``,
+	}, "\n")
+	legacyRestore := filepath.Join(p.StateDir, paths.RestoreFileName)
+	legacyData := []byte(`{"root":{"model":{"present":true,"value":"gpt-5.5"},"model_catalog_json":{"present":false},"model_provider":{"present":false},"profile":{"present":false}},"features":{"image_generation":{"present":true,"raw":"true"}}}` + "\n")
+	if err := os.MkdirAll(p.CodexDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(legacyRestore), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.CodexConfig, []byte(patched), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.ProfileConfig, []byte(patched), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.ModelCatalog, []byte(`{"models":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyRestore, legacyData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := Restore(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restored {
+		t.Fatal("expected legacy restore state to be applied")
+	}
+	data, err := os.ReadFile(p.CodexConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if !strings.Contains(text, `model = "gpt-5.5"`) || !strings.Contains(text, `image_generation = true`) {
+		t.Fatalf("legacy restore state was not applied:\n%s", text)
+	}
+	if strings.Contains(text, ProviderName) {
+		t.Fatalf("provider settings should be removed:\n%s", text)
+	}
+	if _, err := os.Stat(legacyRestore); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy restore file to be removed, got %v", err)
+	}
+	if _, err := os.Stat(p.ProfileConfig); !os.IsNotExist(err) {
+		t.Fatalf("expected profile config to be removed, got %v", err)
+	}
+	if _, err := os.Stat(p.ModelCatalog); !os.IsNotExist(err) {
+		t.Fatalf("expected model catalog to be removed, got %v", err)
+	}
+}
+
 func TestRestoreRemovesGeneratedProfileConfig(t *testing.T) {
 	p := testPaths(t.TempDir())
 	models := []copilot.Model{{"id": "gpt-5.4", "supported_endpoints": []any{"/v1/responses"}}}

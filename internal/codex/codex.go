@@ -86,6 +86,19 @@ func backupFile(path string, backupDir string) error {
 	return nil
 }
 
+func legacyRestoreFile(p paths.Paths) string {
+	legacy := filepath.Join(p.StateDir, paths.RestoreFileName)
+	if filepath.Clean(legacy) == filepath.Clean(p.RestoreFile) {
+		return ""
+	}
+	return legacy
+}
+
+func hasCurrentProviderConfig(text string, p paths.Paths) bool {
+	return strings.Contains(text, `model_provider = "`+ProviderName+`"`) &&
+		strings.Contains(text, `model_catalog_json = `+quote(p.ModelCatalog))
+}
+
 func parseRootValues(text string) map[string]rootValue {
 	values := map[string]rootValue{}
 	keyPattern := regexp.MustCompile(`^\s*([A-Za-z0-9_-]+)\s*=\s*(.*)\s*$`)
@@ -117,6 +130,15 @@ func parseRootValues(text string) map[string]rootValue {
 func saveRestoreState(p paths.Paths, text string) error {
 	if _, err := os.Stat(p.RestoreFile); err == nil {
 		return nil
+	}
+	if legacy := legacyRestoreFile(p); legacy != "" && hasCurrentProviderConfig(text, p) {
+		data, err := os.ReadFile(legacy)
+		if err == nil {
+			return atomicWrite(p.RestoreFile, data, 0o600)
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 	state := restoreState{Root: map[string]rootValue{}, Features: map[string]rawValue{}}
 	values := parseRootValues(text)
@@ -165,13 +187,21 @@ func sectionRange(lines []string, header string) (int, int, bool) {
 	return 0, 0, false
 }
 
+func spliceLines(lines []string, start int, end int, replacement []string) string {
+	out := make([]string, 0, len(lines)-(end-start)+len(replacement))
+	out = append(out, lines[:start]...)
+	out = append(out, replacement...)
+	out = append(out, lines[end:]...)
+	return strings.Join(out, "")
+}
+
 func removeSection(text string, header string) string {
 	lines := strings.SplitAfter(text, "\n")
 	start, end, ok := sectionRange(lines, header)
 	if !ok {
 		return text
 	}
-	return strings.Join(append(lines[:start], lines[end:]...), "")
+	return spliceLines(lines, start, end, nil)
 }
 
 func upsertSection(text string, header string, body string) string {
@@ -180,7 +210,7 @@ func upsertSection(text string, header string, body string) string {
 	start, end, ok := sectionRange(lines, header)
 	if ok {
 		repLines := strings.SplitAfter(replacement, "\n")
-		return strings.Join(append(append(lines[:start], repLines...), lines[end:]...), "")
+		return spliceLines(lines, start, end, repLines)
 	}
 	if text != "" && !strings.HasSuffix(text, "\n") {
 		text += "\n"
@@ -267,7 +297,7 @@ func setTableRawValues(text string, header string, values map[string]string) str
 			section = append(section, key+" = "+value+"\n")
 		}
 	}
-	return strings.Join(append(append(lines[:start+1], section...), lines[end:]...), "")
+	return spliceLines(lines, start+1, end, section)
 }
 
 func restoreTableRawValues(text string, header string, saved map[string]rawValue) string {
@@ -308,7 +338,7 @@ func restoreTableRawValues(text string, header string, saved map[string]rawValue
 			section[index] = ""
 		}
 	}
-	return strings.Join(append(append(lines[:start+1], section...), lines[end:]...), "")
+	return spliceLines(lines, start+1, end, section)
 }
 
 func setRootValues(text string, values map[string]string) string {
@@ -418,15 +448,27 @@ func Configure(p paths.Paths, model string, models []copilot.Model, baseURL stri
 
 func Restore(p paths.Paths) (bool, error) {
 	configData, configErr := os.ReadFile(p.CodexConfig)
-	restoreData, restoreErr := os.ReadFile(p.RestoreFile)
 	_, profileErr := os.Stat(p.ProfileConfig)
+	text := string(configData)
+	restorePath := p.RestoreFile
+	restoreData, restoreErr := os.ReadFile(restorePath)
+	if errors.Is(restoreErr, os.ErrNotExist) {
+		if legacy := legacyRestoreFile(p); legacy != "" && hasCurrentProviderConfig(text, p) {
+			if data, err := os.ReadFile(legacy); err == nil {
+				restoreData = data
+				restoreErr = nil
+				restorePath = legacy
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return false, err
+			}
+		}
+	}
 	if errors.Is(configErr, os.ErrNotExist) && errors.Is(restoreErr, os.ErrNotExist) && errors.Is(profileErr, os.ErrNotExist) {
 		return false, nil
 	}
 	if configErr != nil && !errors.Is(configErr, os.ErrNotExist) {
 		return false, configErr
 	}
-	text := string(configData)
 	if restoreErr == nil {
 		var state restoreState
 		if err := json.Unmarshal(restoreData, &state); err != nil {
@@ -448,6 +490,9 @@ func Restore(p paths.Paths) (bool, error) {
 	_ = os.Remove(p.ModelCatalog)
 	_ = os.Remove(p.ProfileConfig)
 	_ = os.Remove(p.RestoreFile)
+	if restorePath != p.RestoreFile {
+		_ = os.Remove(restorePath)
+	}
 	return true, nil
 }
 

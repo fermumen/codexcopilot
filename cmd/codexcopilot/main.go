@@ -163,7 +163,7 @@ func systemdQuote(arg string) string {
 	return `"` + arg + `"`
 }
 
-func serverServiceUnit(binaryPath, host string, port int, model string) string {
+func serverServiceUnit(binaryPath, host string, port int, model string, codexHome string) string {
 	args := []string{
 		systemdQuote(binaryPath),
 		"responses-server",
@@ -175,21 +175,27 @@ func serverServiceUnit(binaryPath, host string, port int, model string) string {
 	if model != "" {
 		args = append(args, "--model", systemdQuote(model))
 	}
-	return strings.Join([]string{
+	lines := []string{
 		"[Unit]",
 		"Description=codexcopilot Responses proxy",
 		"After=network-online.target",
 		"Wants=network-online.target",
 		"",
 		"[Service]",
-		"ExecStart=" + strings.Join(args, " "),
+	}
+	if codexHome != "" {
+		lines = append(lines, "Environment="+systemdQuote("CODEX_HOME="+codexHome))
+	}
+	lines = append(lines,
+		"ExecStart="+strings.Join(args, " "),
 		"Restart=on-failure",
 		"RestartSec=2",
 		"",
 		"[Install]",
 		"WantedBy=default.target",
 		"",
-	}, "\n")
+	)
+	return strings.Join(lines, "\n")
 }
 
 func commandInstallServerService(args []string) error {
@@ -232,7 +238,7 @@ func commandInstallServerService(args []string) error {
 	if err := os.MkdirAll(serviceDir, 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(servicePath, []byte(serverServiceUnit(exe, *host, *port, *model)), 0o644); err != nil {
+	if err := os.WriteFile(servicePath, []byte(serverServiceUnit(exe, *host, *port, *model, os.Getenv("CODEX_HOME"))), 0o644); err != nil {
 		return err
 	}
 	if out, err := runExternalCommand("systemctl", "--user", "daemon-reload"); err != nil {
