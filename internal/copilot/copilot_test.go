@@ -22,6 +22,19 @@ func TestCodexAppModelsKeepsOpenAIResponsesModels(t *testing.T) {
 	}
 }
 
+func TestAnthropicMessagesModelsKeepsPickerVisibleMessagesModels(t *testing.T) {
+	models := []Model{
+		{"id": "claude-sonnet-4.5", "supported_endpoints": []any{"/v1/messages"}, "model_picker_enabled": true},
+		{"id": "claude-hidden", "supported_endpoints": []any{"/v1/messages"}, "model_picker_enabled": false},
+		{"id": "claude-disabled", "supported_endpoints": []any{"/v1/messages"}, "model_picker_enabled": true, "policy": map[string]any{"state": "disabled"}},
+		{"id": "gpt-5.4", "supported_endpoints": []any{"/responses"}, "model_picker_enabled": true},
+	}
+	got := AnthropicMessagesModels(models)
+	if len(got) != 1 || got[0]["id"] != "claude-sonnet-4.5" {
+		t.Fatalf("unexpected Messages API models: %#v", got)
+	}
+}
+
 func TestChooseModelPrefersLatestGPTVersion(t *testing.T) {
 	models := []Model{
 		{"id": "gpt-5.4", "supported_endpoints": []any{"/v1/responses"}},

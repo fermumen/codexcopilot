@@ -116,7 +116,7 @@ func TestProviderPatchUsesBaseURLModels(t *testing.T) {
 	}
 }
 
-func TestManagedResponsesServerPatchesAndRestores(t *testing.T) {
+func TestManagedAPIProxyPatchesAndRestores(t *testing.T) {
 	root := t.TempDir()
 	p := testCommandPaths(root)
 	if err := os.MkdirAll(p.CodexDir, 0o755); err != nil {
@@ -152,7 +152,7 @@ func TestManagedResponsesServerPatchesAndRestores(t *testing.T) {
 	})
 
 	models := []copilot.Model{{"id": "gpt-5.4", "supported_endpoints": []any{"/v1/responses"}, "model_picker_enabled": true}}
-	if err := runManagedResponsesServer(p, auth.Auth{AccessToken: "test-token"}, models, "gpt-5.4", "127.0.0.1", 0, true); err != nil {
+	if err := runManagedAPIProxy(p, auth.Auth{AccessToken: "test-token"}, models, "gpt-5.4", "127.0.0.1", 0, true); err != nil {
 		t.Fatal(err)
 	}
 

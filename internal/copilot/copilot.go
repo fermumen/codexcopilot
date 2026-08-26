@@ -50,6 +50,7 @@ func Headers(a auth.Auth, initiator string, vision bool) http.Header {
 	h.Set("Editor-Plugin-Version", "codexcopilot/0.4.1")
 	h.Set("Copilot-Integration-Id", "vscode-chat")
 	h.Set("Openai-Intent", "conversation-edits")
+	h.Set("X-GitHub-Api-Version", "2026-06-01")
 	h.Set("X-Initiator", initiator)
 	if vision {
 		h.Set("Copilot-Vision-Request", "true")
@@ -183,6 +184,32 @@ func SupportsResponsesAPI(model Model) bool {
 	}
 	id := stringValue(model, "id")
 	return strings.HasPrefix(id, "gpt-5") && !strings.HasPrefix(id, "gpt-5-mini")
+}
+
+func SupportsMessagesAPI(model Model) bool {
+	for _, endpoint := range supportedEndpoints(model) {
+		if strings.TrimRight(endpoint, "/") == "/v1/messages" {
+			return true
+		}
+	}
+	return false
+}
+
+func AnthropicMessagesModels(models []Model) []Model {
+	var selected []Model
+	for _, model := range models {
+		if !boolDefault(model, "model_picker_enabled", true) {
+			continue
+		}
+		if !policyEnabled(model) {
+			continue
+		}
+		if !SupportsMessagesAPI(model) {
+			continue
+		}
+		selected = append(selected, model)
+	}
+	return selected
 }
 
 func IsOpenAIModel(model Model) bool {

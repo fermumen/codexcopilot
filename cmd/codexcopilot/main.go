@@ -155,7 +155,7 @@ func commandServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	return runManagedResponsesServer(p, a, remoteModels, *model, *host, *port, *vanilla)
+	return runManagedAPIProxy(p, a, remoteModels, *model, *host, *port, *vanilla)
 }
 
 func systemdQuote(arg string) string {
@@ -182,7 +182,7 @@ func serverServiceUnit(binaryPath, host string, port int, model string, codexHom
 	}
 	lines := []string{
 		"[Unit]",
-		"Description=codexcopilot Responses proxy",
+		"Description=codexcopilot API proxy",
 		"After=network-online.target",
 		"Wants=network-online.target",
 		"",
@@ -378,7 +378,7 @@ func waitForServer(server *http.Server, errs <-chan error) error {
 	}
 }
 
-func runManagedResponsesServer(p paths.Paths, a auth.Auth, remoteModels []copilot.Model, requestedModel string, host string, port int, vanilla bool) error {
+func runManagedAPIProxy(p paths.Paths, a auth.Auth, remoteModels []copilot.Model, requestedModel string, host string, port int, vanilla bool) error {
 	server, errs, baseURL, err := startProxy(a, host, port)
 	if err != nil {
 		return err
@@ -389,7 +389,7 @@ func runManagedResponsesServer(p paths.Paths, a auth.Auth, remoteModels []copilo
 		return err
 	}
 	defer restoreProvider(p)
-	fmt.Printf("GitHub Copilot Responses proxy listening on %s/v1/\n", baseURL)
+	fmt.Printf("GitHub Copilot API proxy listening on %s/v1/\n", baseURL)
 	fmt.Printf("Patched Codex default provider for %q.\n", selected)
 	fmt.Println("Leave this process running while Codex uses GitHub Copilot. Config will be restored on exit.")
 	return waitForServerShutdown(server, errs)
@@ -430,7 +430,7 @@ func commandCodex(args []string) error {
 	}
 	defer restoreProvider(p)
 	fmt.Printf("Configured Codex profile %q for %q.\n", codex.ProfileName, selected)
-	fmt.Printf("GitHub Copilot proxy listening on %s/v1/\n", baseURL)
+	fmt.Printf("GitHub Copilot API proxy listening on %s/v1/\n", baseURL)
 	runArgs := append([]string{"--profile", codex.ProfileName}, codexArgs...)
 	runErr := runForegroundCommand(*codexBin, runArgs...)
 	_ = server.Close()
@@ -520,7 +520,7 @@ func commandLaunch(args []string) error {
 	}
 	defer restoreProvider(p)
 	fmt.Printf("Configured Codex App profile %q at %s.\n", selected, p.CodexConfig)
-	fmt.Printf("GitHub Copilot proxy listening on %s/v1/\n", baseURL)
+	fmt.Printf("GitHub Copilot API proxy listening on %s/v1/\n", baseURL)
 	if err := codex.LaunchApp(); err != nil {
 		_ = server.Close()
 		return err

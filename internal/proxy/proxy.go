@@ -17,6 +17,14 @@ import (
 
 const SyntheticAttachmentPrompt = "The user attached an image."
 
+// GitHub Copilot's Anthropic shim supports only a subset of the beta flags
+// Claude clients may send. Keep this aligned with Copilot's own Claude proxy.
+var supportedAnthropicBetaPrefixes = []string{
+	"interleaved-thinking",
+	"context-management",
+	"advanced-tool-use",
+}
+
 var unsupportedToolTypes = map[string]bool{
 	"image_generation": true,
 	"image_tool":       true,
@@ -39,7 +47,7 @@ var hopByHopHeaders = map[string]bool{
 func hasImage(value any) bool {
 	switch v := value.(type) {
 	case map[string]any:
-		if kind, _ := v["type"].(string); kind == "input_image" || kind == "image_url" {
+		if kind, _ := v["type"].(string); kind == "input_image" || kind == "image_url" || kind == "image" {
 			return true
 		}
 		for _, item := range v {
@@ -100,6 +108,56 @@ func stripUnsupportedTools(body []byte) []byte {
 	return data
 }
 
+func stripAnthropicUnsupportedToolFields(body []byte) []byte {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body
+	}
+	tools, ok := payload["tools"].([]any)
+	if !ok {
+		return body
+	}
+	changed := false
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		// Copilot's /v1/messages shim rejects this newer Anthropic tool field.
+		if _, ok := tool["eager_input_streaming"]; ok {
+			delete(tool, "eager_input_streaming")
+			changed = true
+		}
+	}
+	if !changed {
+		return body
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return data
+}
+
+func filterAnthropicBetas(value string) string {
+	seen := map[string]bool{}
+	var filtered []string
+	for _, raw := range strings.Split(value, ",") {
+		beta := strings.TrimSpace(raw)
+		if beta == "" || seen[beta] {
+			continue
+		}
+		for _, prefix := range supportedAnthropicBetaPrefixes {
+			if strings.HasPrefix(beta, prefix+"-") {
+				seen[beta] = true
+				filtered = append(filtered, beta)
+				break
+			}
+		}
+	}
+	return strings.Join(filtered, ",")
+}
+
 func isSyntheticAttachmentMessage(message any) bool {
 	msg, ok := message.(map[string]any)
 	if !ok || msg["role"] != "user" {
@@ -143,6 +201,41 @@ func messagesInitiator(messages any) string {
 	return "agent"
 }
 
+func anthropicMessagesInitiator(messages any) string {
+	list, ok := messages.([]any)
+	if !ok || len(list) == 0 {
+		return "user"
+	}
+	last, ok := list[len(list)-1].(map[string]any)
+	if !ok {
+		return "user"
+	}
+	if isSyntheticAttachmentMessage(last) {
+		return "agent"
+	}
+	if last["role"] != "user" {
+		return "agent"
+	}
+	switch content := last["content"].(type) {
+	case string:
+		return "user"
+	case []any:
+		for _, rawPart := range content {
+			part, ok := rawPart.(map[string]any)
+			if !ok {
+				return "user"
+			}
+			if kind, _ := part["type"].(string); kind != "tool_result" {
+				return "user"
+			}
+		}
+		if len(content) > 0 {
+			return "agent"
+		}
+	}
+	return "user"
+}
+
 func responsesInitiator(payload map[string]any) string {
 	input, ok := payload["input"]
 	if !ok {
@@ -152,6 +245,14 @@ func responsesInitiator(payload map[string]any) string {
 }
 
 func Initiator(body []byte) string {
+	return initiator(body, false)
+}
+
+func InitiatorForPath(body []byte, path string) string {
+	return initiator(body, isAnthropicMessagesPath(path))
+}
+
+func initiator(body []byte, anthropicMessages bool) string {
 	var payload any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return "user"
@@ -164,9 +265,20 @@ func Initiator(body []byte) string {
 		return responsesInitiator(obj)
 	}
 	if messages, ok := obj["messages"]; ok {
+		if anthropicMessages {
+			return anthropicMessagesInitiator(messages)
+		}
 		return messagesInitiator(messages)
 	}
 	return "user"
+}
+
+func isAnthropicMessagesPath(path string) bool {
+	parsed, err := url.Parse(path)
+	if err != nil {
+		return false
+	}
+	return parsed.Path == "/v1/messages" || strings.HasPrefix(parsed.Path, "/v1/messages/")
 }
 
 func upstreamPath(path string) string {
@@ -181,6 +293,8 @@ func upstreamPath(path string) string {
 		upstream = rawPath
 	case rawPath == "/v1/models":
 		upstream = "/models"
+	case rawPath == "/v1/messages" || strings.HasPrefix(rawPath, "/v1/messages/"):
+		upstream = rawPath
 	case strings.HasPrefix(rawPath, "/v1/"):
 		upstream = strings.TrimPrefix(rawPath, "/v1")
 	default:
@@ -193,12 +307,13 @@ func upstreamPath(path string) string {
 }
 
 type Server struct {
-	Auth auth.Auth
-	Log  *log.Logger
+	Auth    auth.Auth
+	Log     *log.Logger
+	baseURL string
 }
 
 func New(a auth.Auth) *Server {
-	return &Server{Auth: a, Log: log.Default()}
+	return &Server{Auth: a, Log: log.Default(), baseURL: copilot.APIBase(a)}
 }
 
 func (s *Server) ListenAndServe(addr string) error {
@@ -212,7 +327,7 @@ func (s *Server) ListenAndServe(addr string) error {
 
 func cors(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "authorization,content-type,openai-beta")
+	w.Header().Set("Access-Control-Allow-Headers", "authorization,content-type,openai-beta,anthropic-version,anthropic-beta,x-api-key")
 	w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
 }
 
@@ -263,7 +378,10 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body = stripUnsupportedTools(body)
-	base, err := url.Parse(copilot.APIBase(s.Auth))
+	if isAnthropicMessagesPath(r.URL.Path) {
+		body = stripAnthropicUnsupportedToolFields(body)
+	}
+	base, err := url.Parse(s.baseURL)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]any{"message": err.Error()}})
 		return
@@ -279,16 +397,24 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": map[string]any{"message": err.Error()}})
 		return
 	}
-	for key, values := range copilot.Headers(s.Auth, Initiator(body), bodyHasImage(body)) {
+	for key, values := range r.Header {
+		lower := strings.ToLower(key)
+		if hopByHopHeaders[lower] || lower == "authorization" || lower == "x-api-key" || lower == "x-initiator" {
+			continue
+		}
+		req.Header.Del(key)
 		for _, value := range values {
 			req.Header.Add(key, value)
 		}
 	}
-	for key, values := range r.Header {
-		lower := strings.ToLower(key)
-		if hopByHopHeaders[lower] || lower == "authorization" || lower == "x-initiator" {
-			continue
+	if isAnthropicMessagesPath(r.URL.Path) {
+		if filtered := filterAnthropicBetas(req.Header.Get("Anthropic-Beta")); filtered != "" {
+			req.Header.Set("Anthropic-Beta", filtered)
+		} else {
+			req.Header.Del("Anthropic-Beta")
 		}
+	}
+	for key, values := range copilot.Headers(s.Auth, InitiatorForPath(body, r.URL.Path), bodyHasImage(body)) {
 		req.Header.Del(key)
 		for _, value := range values {
 			req.Header.Add(key, value)

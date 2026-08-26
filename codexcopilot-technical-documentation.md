@@ -58,9 +58,11 @@ codexcopilot launch codex-app
 
 ### Path Mapping
 ```
-/v1/models    → /models
-/v1/responses → /responses
-/v1/...       → /...
+/v1/models                → /models
+/v1/responses             → /responses
+/v1/messages              → /v1/messages
+/v1/messages/count_tokens → /v1/messages/count_tokens
+/v1/...                   → /...
 ```
 
 ### Added Headers
@@ -71,14 +73,25 @@ Editor-Version: codexcopilot/0.4.1
 Editor-Plugin-Version: codexcopilot/0.4.1
 Copilot-Integration-Id: vscode-chat
 Openai-Intent: conversation-edits
+X-GitHub-Api-Version: 2026-06-01
 X-Initiator: user|agent
 Copilot-Vision-Request: true (when image input detected)
 ```
 
 ### Initiator Inference
-- Last `input[]` item with `role: "user"` → `X-Initiator: user`
-- Tool/function-call-output/assistant continuation → `X-Initiator: agent`
+- Last Responses `input[]` item with `role: "user"` → `X-Initiator: user`
+- Responses tool/function-call-output/assistant continuation → `X-Initiator: agent`
+- Anthropic Messages user message containing only `tool_result` blocks → `X-Initiator: agent`
+- Anthropic Messages user text/content → `X-Initiator: user`
 - Unknown/malformed → `X-Initiator: user`
+
+### Anthropic Messages Compatibility
+- Copilot advertises Claude-family models with `supported_endpoints: ["/v1/messages"]`; the proxy preserves the `/v1` prefix for this endpoint.
+- `/v1/messages/count_tokens` is passed through unchanged.
+- Incoming `x-api-key` is stripped so a caller's Anthropic credential is never forwarded to GitHub.
+- `anthropic-beta` is filtered to Copilot-supported beta families: `interleaved-thinking`, `context-management`, and `advanced-tool-use`.
+- `eager_input_streaming` is removed from tool definitions because Copilot's Messages shim rejects that Anthropic SDK field.
+- Anthropic `image` blocks, including images nested in `tool_result`, trigger `Copilot-Vision-Request: true`.
 
 ## Files Touched
 

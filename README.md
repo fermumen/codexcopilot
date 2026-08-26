@@ -171,7 +171,7 @@ Current Codex no longer accepts legacy root `profile = "..."` selection in `~/.c
 
 The proxy stays in the foreground. When the launcher exits, it restores the previous Codex provider settings and removes the generated profile file.
 
-## Managed Responses Server
+## Managed API Server (`responses-server`)
 
 To make GitHub Copilot the local Codex default provider while a foreground server is running:
 
@@ -179,7 +179,7 @@ To make GitHub Copilot the local Codex default provider while a foreground serve
 ./bin/codexcopilot responses-server
 ```
 
-This command starts the Copilot-backed OpenAI Responses proxy, patches local Codex provider settings, and restores the previous Codex config when the process exits. Leave it running while Codex CLI, Codex App, or a remote app session should use GitHub Copilot.
+This command starts the Copilot-backed API proxy, patches local Codex provider settings, and restores the previous Codex config when the process exits. The server supports both OpenAI Responses requests for Codex and native Anthropic Messages requests for Claude-family Copilot models. Leave it running while Codex or another compatible local client should use GitHub Copilot.
 
 By default it listens on:
 
@@ -218,7 +218,7 @@ codexcopilot codex --model gpt-5.4 -- -C /work "inspect this repo"
 
 ## Systemd User Service
 
-On Linux systems with systemd, install the Responses proxy as a persistent user service:
+On Linux systems with systemd, install the API proxy as a persistent user service:
 
 ```bash
 codexcopilot auth login
@@ -403,7 +403,7 @@ Restore puts those root values back, removes this tool's owned provider section 
 
 ## Proxy Behavior
 
-The proxy accepts Codex App requests at:
+The proxy accepts OpenAI Responses and Anthropic Messages requests at:
 
 ```text
 http://127.0.0.1:11435/v1/
@@ -412,9 +412,11 @@ http://127.0.0.1:11435/v1/
 Path mapping:
 
 ```text
-/v1/models      -> /models
-/v1/responses   -> /responses
-/v1/...         -> /...
+/v1/models                  -> /models
+/v1/responses               -> /responses
+/v1/messages                -> /v1/messages
+/v1/messages/count_tokens   -> /v1/messages/count_tokens
+/v1/...                     -> /...
 ```
 
 For upstream Copilot requests it adds:
@@ -426,12 +428,13 @@ Editor-Version: codexcopilot/0.4.1
 Editor-Plugin-Version: codexcopilot/0.4.1
 Copilot-Integration-Id: vscode-chat
 Openai-Intent: conversation-edits
+X-GitHub-Api-Version: 2026-06-01
 X-Initiator: user|agent
 ```
 
 It also adds `Copilot-Vision-Request: true` when the request body contains image input.
 
-Incoming `Authorization` and `X-Initiator` headers are stripped so the proxy owns auth and initiator attribution.
+Incoming `Authorization`, `X-Api-Key`, and `X-Initiator` headers are stripped so the proxy owns auth and initiator attribution and never forwards a caller's Anthropic key. For Anthropic Messages requests, the proxy also filters `anthropic-beta` to Copilot-supported beta families (`interleaved-thinking`, `context-management`, and `advanced-tool-use`) and removes the `eager_input_streaming` tool field that Copilot's Messages shim rejects.
 
 ## Initiator Inference
 
@@ -440,7 +443,9 @@ GitHub Copilot distinguishes user-initiated turns from agent continuations. Open
 Current behavior:
 
 - Last Responses `input[]` item with `role: "user"` -> `X-Initiator: user`
-- Tool, function-call-output, assistant, or other continuation item -> `X-Initiator: agent`
+- Responses tool, function-call-output, assistant, or other continuation item -> `X-Initiator: agent`
+- Anthropic Messages `role: "user"` with only `tool_result` blocks -> `X-Initiator: agent`
+- Anthropic Messages user text/content -> `X-Initiator: user`
 - Malformed or unknown payload -> `X-Initiator: user`
 
 That is the closest approximation available at the wire-proxy layer.
