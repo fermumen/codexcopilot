@@ -372,6 +372,53 @@ func TestConfigurePreservesFollowingSections(t *testing.T) {
 	}
 }
 
+func TestPatchProviderConfigPreservesAppManagedRuntimeSections(t *testing.T) {
+	p := testPaths(t.TempDir())
+	initial := strings.Join([]string{
+		`notify = ["C:\\Codex\\codex-computer-use.exe", "turn-ended"]`,
+		``,
+		`[features]`,
+		`js_repl = false`,
+		``,
+		`[plugins."unified-computer-use@openai-bundled"]`,
+		`enabled = true`,
+		``,
+		`[mcp_servers.node_repl]`,
+		`command = "C:\\Codex\\node_repl.exe"`,
+		`startup_timeout_sec = 120`,
+		``,
+		`[mcp_servers.node_repl.env]`,
+		`BROWSER_USE_AVAILABLE_BACKENDS = "chrome"`,
+		`SKY_CUA_NATIVE_PIPE_DIRECTORY = "codex-computer-use-current"`,
+		``,
+		`[desktop]`,
+		`runCodexInWindowsSubsystemForLinux = true`,
+		``,
+		`[shell_environment_policy.set]`,
+		`NODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = "current-hash"`,
+		``,
+	}, "\n")
+
+	configured := patchProviderConfig(initial, p, "gpt-5.4", "http://127.0.0.1:11435/v1/", false)
+	preserved := []string{
+		`notify = ["C:\\Codex\\codex-computer-use.exe", "turn-ended"]`,
+		"[plugins.\"unified-computer-use@openai-bundled\"]\nenabled = true",
+		"[mcp_servers.node_repl]\ncommand = \"C:\\\\Codex\\\\node_repl.exe\"\nstartup_timeout_sec = 120",
+		"[mcp_servers.node_repl.env]\nBROWSER_USE_AVAILABLE_BACKENDS = \"chrome\"\nSKY_CUA_NATIVE_PIPE_DIRECTORY = \"codex-computer-use-current\"",
+		"[desktop]\nrunCodexInWindowsSubsystemForLinux = true",
+		"[shell_environment_policy.set]\nNODE_REPL_TRUSTED_BROWSER_CLIENT_SHA256S = \"current-hash\"",
+	}
+	for _, want := range preserved {
+		if !strings.Contains(configured, want) {
+			t.Fatalf("provider patch should preserve app-managed config %q:\n%s", want, configured)
+		}
+	}
+	if !strings.Contains(configured, `model_provider = "codexcopilot-codex-app"`) ||
+		!strings.Contains(configured, `image_generation = false`) {
+		t.Fatalf("provider patch missing owned settings:\n%s", configured)
+	}
+}
+
 func TestConfigureMigratesLegacyRestoreStateForActivePatch(t *testing.T) {
 	p := testPaths(t.TempDir())
 	p.RestoreFile = filepath.Join(p.StateDir, "codex-scoped", "codex-app-restore.json")

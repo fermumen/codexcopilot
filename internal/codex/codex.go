@@ -367,6 +367,44 @@ func profileConfigText(p paths.Paths, model string, normalizedBase string, vanil
 	return strings.Join(lines, "\n")
 }
 
+// patchProviderConfig updates only settings owned by codexcopilot. In
+// particular, app-managed plugin, MCP, desktop, and Computer Use sections must
+// survive unchanged because Codex rewrites those sections as runtimes and
+// feature availability change.
+func patchProviderConfig(text string, p paths.Paths, model string, normalizedBase string, vanilla bool) string {
+	text = removeRootValue(text, "profile")
+	text = removeSection(text, "[profiles."+ProfileName+"]")
+	rootValues := map[string]string{
+		"model":              model,
+		"model_provider":     ProviderName,
+		"model_catalog_json": p.ModelCatalog,
+	}
+	features := map[string]string{ImageGenerationFeature: "false"}
+	if vanilla {
+		rootValues[WebSearchKey] = "disabled"
+		for _, feature := range vanillaFeatures {
+			features[feature] = "false"
+		}
+	}
+	text = setRootValues(text, rootValues)
+	text = setTableRawValues(text, "[features]", features)
+	if vanilla {
+		text = setTableRawValues(text, skillsBundledHeader, map[string]string{skillsBundledEnabled: "false"})
+	} else if state := loadRestoreState(p); state != nil {
+		// Revert vanilla-only settings from an earlier vanilla configure.
+		text = restoreRootValuesFor(text, []string{WebSearchKey}, state.Root)
+		vanillaOnly := map[string]rawValue{}
+		saved := state.savedFeatures()
+		for _, feature := range vanillaFeatures {
+			vanillaOnly[feature] = saved[feature]
+		}
+		text = restoreTableRawValues(text, "[features]", vanillaOnly)
+		text = restoreTableRawValues(text, skillsBundledHeader, state.savedTable(skillsBundledState, skillsBundledEnabled))
+		text = removeSectionIfEmpty(text, skillsBundledHeader)
+	}
+	return upsertSection(text, "[model_providers."+ProviderName+"]", providerSectionText(normalizedBase))
+}
+
 func setTableRawValues(text string, header string, values map[string]string) string {
 	lines := strings.SplitAfter(text, "\n")
 	start, end, ok := sectionRange(lines, header)
@@ -525,14 +563,13 @@ func restoreRootValuesFor(text string, keys []string, saved map[string]rootValue
 // tooling: Codex Apps connectors, plugins, workspace dependencies, web search,
 // and bundled skills.
 func Configure(p paths.Paths, model string, models []copilot.Model, baseURL string, vanilla bool) error {
-	data, err := os.ReadFile(p.CodexConfig)
+	initialData, err := os.ReadFile(p.CodexConfig)
 	if errors.Is(err, os.ErrNotExist) {
-		data = nil
+		initialData = nil
 	} else if err != nil {
 		return err
 	}
-	text := string(data)
-	if err := saveRestoreState(p, text); err != nil {
+	if err := saveRestoreState(p, string(initialData)); err != nil {
 		return err
 	}
 	if err := backupFile(p.CodexConfig, p.BackupDir); err != nil {
@@ -546,40 +583,21 @@ func Configure(p paths.Paths, model string, models []copilot.Model, baseURL stri
 		return err
 	}
 	normalizedBase := NormalizeProviderBaseURL(baseURL)
-	text = removeRootValue(text, "profile")
-	text = removeSection(text, "[profiles."+ProfileName+"]")
-	rootValues := map[string]string{
-		"model":              model,
-		"model_provider":     ProviderName,
-		"model_catalog_json": p.ModelCatalog,
-	}
-	features := map[string]string{ImageGenerationFeature: "false"}
-	if vanilla {
-		rootValues[WebSearchKey] = "disabled"
-		for _, feature := range vanillaFeatures {
-			features[feature] = "false"
-		}
-	}
-	text = setRootValues(text, rootValues)
-	text = setTableRawValues(text, "[features]", features)
-	if vanilla {
-		text = setTableRawValues(text, skillsBundledHeader, map[string]string{skillsBundledEnabled: "false"})
-	} else if state := loadRestoreState(p); state != nil {
-		// Revert vanilla-only settings from an earlier vanilla configure.
-		text = restoreRootValuesFor(text, []string{WebSearchKey}, state.Root)
-		vanillaOnly := map[string]rawValue{}
-		saved := state.savedFeatures()
-		for _, feature := range vanillaFeatures {
-			vanillaOnly[feature] = saved[feature]
-		}
-		text = restoreTableRawValues(text, "[features]", vanillaOnly)
-		text = restoreTableRawValues(text, skillsBundledHeader, state.savedTable(skillsBundledState, skillsBundledEnabled))
-		text = removeSectionIfEmpty(text, skillsBundledHeader)
-	}
-	text = upsertSection(text, "[model_providers."+ProviderName+"]", providerSectionText(normalizedBase))
 	if err := atomicWrite(p.ProfileConfig, []byte(profileConfigText(p, model, normalizedBase, vanilla)), 0o644); err != nil {
 		return err
 	}
+
+	// Codex App updates runtime paths, native-pipe ids, and feature-gated MCP
+	// sections while it is running. Re-read immediately before patching so a
+	// concurrent app refresh is not replaced with the earlier snapshot used for
+	// restore state and backup creation.
+	latestData, err := os.ReadFile(p.CodexConfig)
+	if errors.Is(err, os.ErrNotExist) {
+		latestData = nil
+	} else if err != nil {
+		return err
+	}
+	text := patchProviderConfig(string(latestData), p, model, normalizedBase, vanilla)
 	return atomicWrite(p.CodexConfig, []byte(text), 0o644)
 }
 

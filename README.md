@@ -287,6 +287,134 @@ Restore previous Codex provider settings manually:
 ./bin/codexcopilot provider restore
 ```
 
+## Direct Azure OpenAI Fallback (Entra ID)
+
+Codex can call Azure OpenAI directly and obtain renewable bearer tokens from
+`az login`. No Azure proxy or API key is required. Make Azure your base Codex
+configuration and codexcopilot will save it when starting, then restore it when
+stopping.
+
+This configuration was verified with Codex CLI 0.155.1 and the desktop app's
+bundled Codex 0.153.4. Older clients need support for
+`[model_providers.<id>.auth]`; update clients that reject that table.
+
+### One-time setup
+
+1. Stop the managed Copilot process **before editing the base config**, so its
+   saved restore state is applied first. For the systemd service:
+
+   ```bash
+   systemctl --user stop codexcopilot.service
+   ```
+
+   For a foreground `responses-server`, stop it with Ctrl+C. For a manual
+   `provider patch`, run `codexcopilot provider restore`.
+
+2. Sign in to the Azure tenant and subscription containing your resource:
+
+   ```bash
+   az login --tenant TENANT_ID
+   az account set --subscription SUBSCRIPTION_ID
+   ```
+
+   The identity needs inference access, such as **Cognitive Services OpenAI
+   User**, on the resource.
+
+3. Create a separate static model catalog. With command-backed auth, Codex tries
+   to discover models remotely, but Azure's `/models` response is not a Codex
+   catalog. A static catalog avoids discovery errors and limits the picker to
+   your deployments. For example, using `curl` and `jq`:
+
+   ```bash
+   codex_home="${CODEX_HOME:-$HOME/.codex}"
+   mkdir -p "$codex_home"
+   curl -fsSL https://raw.githubusercontent.com/openai/codex/30fc6864cc1318121eca1843c217fe00ce1212f1/codex-rs/models-manager/models.json \
+     -o "$codex_home/azure-catalog-source.json"
+   jq '{models: [.models[] | select(.slug == "gpt-6-astra" or .slug == "gpt-6-sol" or .slug == "gpt-6-luna" or .slug == "gpt-5.6-sol" or .slug == "gpt-5.6-terra" or .slug == "gpt-5.6-luna")]}' \
+     "$codex_home/azure-catalog-source.json" > "$codex_home/azure-models.json"
+   ```
+
+   Adjust the selection to models actually deployed in your resource. If a
+   deployment has a custom name, change its catalog entry's `slug` to that
+   deployment name and use the same name for `model`. The pinned catalog provides
+   Codex model metadata and instructions; it does not discover Azure deployments.
+   Keep this file separate from `codexcopilot-models.json`, which restore deletes.
+
+4. Merge these settings into `$CODEX_HOME/config.toml` (default
+   `~/.codex/config.toml`), preserving your other settings. Root keys belong
+   **before the first table header**. Replace the resource, subscription, model,
+   catalog path, and Azure CLI path as needed:
+
+   ```toml
+   model = "gpt-5.6-sol"
+   model_provider = "azure"
+   model_catalog_json = "/home/you/.codex/azure-models.json"
+
+   [model_providers.azure]
+   name = "Azure OpenAI (Entra)"
+   base_url = "https://YOUR_RESOURCE.openai.azure.com/openai/v1/"
+   wire_api = "responses"
+   supports_websockets = false
+
+   [model_providers.azure.auth]
+   command = "/usr/bin/az"
+   args = ["account", "get-access-token", "--resource", "https://cognitiveservices.azure.com", "--subscription", "SUBSCRIPTION_ID", "--query", "accessToken", "--output", "tsv"]
+   timeout_ms = 30000
+   refresh_interval_ms = 300000
+   ```
+
+   Use the Azure **deployment name** as `model`. The v1 endpoint includes
+   `/openai/v1/` and needs no `api-version` query parameter. Codex runs the auth
+   command directly and caches its token for up to five minutes before requesting
+   a fresh token. Pinning the subscription keeps auth in the intended tenant even
+   if you change the Azure CLI's default subscription. Use an absolute command
+   path for desktop launches; on Windows this may need a command wrapper for
+   `az.cmd`. The Azure CLI session must belong to the user running Codex.
+
+   Do not combine this auth table with `env_key`, `experimental_bearer_token`, or
+   `requires_openai_auth`. If Azure CLI later requires interactive sign-in, run
+   `az login --tenant TENANT_ID` again.
+
+### Switch providers
+
+For a persistent systemd switch, including after reboot:
+
+```bash
+# Use Copilot; capture the Azure defaults for restoration.
+systemctl --user enable --now codexcopilot.service
+
+# Use Azure directly; stopping Copilot restores the saved Azure defaults.
+systemctl --user disable --now codexcopilot.service
+```
+
+Restart Codex App and start a new conversation after switching; existing
+conversations can retain their previous provider. For the CLI, start a new
+plain `codex` session. `codexcopilot codex` explicitly selects Copilot.
+
+To change the Azure defaults later, stop Copilot first, edit the restored config,
+then start Copilot again when wanted. Editing managed root settings while the
+service is running would leave its earlier restore state in effect.
+
+### Existing Copilot conversations
+
+Changing the default provider does not migrate saved conversations. Codex normally
+restores a thread's saved model/provider on resume; an explicit model/provider
+override can select Azure, but it does not translate provider-specific history.
+
+Copilot transcripts can contain encrypted reasoning items. Replaying one of these
+items against Azure was verified to return `400 invalid_encrypted_content`, even
+with the same model name. Encrypted compaction state should likewise not be assumed
+portable across providers.
+
+For ongoing work, start a new Azure conversation in the same project and supply a
+plain-text handoff with the goal, completed changes, outstanding tasks, and relevant
+files. Keep the original Copilot transcript for reference. Automatically deleting
+encrypted history is not a general migration strategy: removing an encrypted
+compaction checkpoint could discard the only remaining context for earlier work.
+
+References: [Codex command-backed provider auth](https://developers.openai.com/codex/config-file/config-advanced/#custom-model-providers)
+and [Azure Responses API](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/responses).
+
 ## Codex Config Written
 
 The launcher writes root defaults in `~/.codex/config.toml` without using legacy root `profile` selection:
