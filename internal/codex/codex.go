@@ -3,7 +3,6 @@ package codex
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,7 +10,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/fermumen/codexcopilot/internal/catalog"
 	"github.com/fermumen/codexcopilot/internal/copilot"
@@ -95,46 +93,6 @@ func quote(value string) string {
 	return string(data)
 }
 
-func atomicWrite(path string, data []byte, perm os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
-func backupFile(path string, backupDir string) error {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(backupDir, 0o755); err != nil {
-		return err
-	}
-	target := filepath.Join(backupDir, fmt.Sprintf("%s.%d", filepath.Base(path), time.Now().Unix()))
-	if err := os.WriteFile(target, data, 0o644); err != nil {
-		return err
-	}
-	matches, _ := filepath.Glob(filepath.Join(backupDir, filepath.Base(path)+".*"))
-	sort.Slice(matches, func(i, j int) bool {
-		ii, _ := os.Stat(matches[i])
-		jj, _ := os.Stat(matches[j])
-		return ii.ModTime().After(jj.ModTime())
-	})
-	if len(matches) > 5 {
-		for _, stale := range matches[5:] {
-			_ = os.Remove(stale)
-		}
-	}
-	return nil
-}
-
 func legacyRestoreFile(p paths.Paths) string {
 	legacy := filepath.Join(p.StateDir, paths.RestoreFileName)
 	if filepath.Clean(legacy) == filepath.Clean(p.RestoreFile) {
@@ -183,7 +141,7 @@ func saveRestoreState(p paths.Paths, text string) error {
 	if legacy := legacyRestoreFile(p); legacy != "" && hasCurrentProviderConfig(text, p) {
 		data, err := os.ReadFile(legacy)
 		if err == nil {
-			return atomicWrite(p.RestoreFile, data, 0o600)
+			return paths.AtomicWrite(p.RestoreFile, data, 0o600)
 		}
 		if !errors.Is(err, os.ErrNotExist) {
 			return err
@@ -204,7 +162,7 @@ func saveRestoreState(p paths.Paths, text string) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(p.RestoreFile, append(data, '\n'), 0o600)
+	return paths.AtomicWrite(p.RestoreFile, append(data, '\n'), 0o600)
 }
 
 func loadRestoreState(p paths.Paths) *restoreState {
@@ -572,18 +530,18 @@ func Configure(p paths.Paths, model string, models []copilot.Model, baseURL stri
 	if err := saveRestoreState(p, string(initialData)); err != nil {
 		return err
 	}
-	if err := backupFile(p.CodexConfig, p.BackupDir); err != nil {
+	if err := paths.BackupFile(p.CodexConfig, p.BackupDir); err != nil {
 		return err
 	}
 	catalogData, err := catalog.Build(models, model)
 	if err != nil {
 		return err
 	}
-	if err := atomicWrite(p.ModelCatalog, catalogData, 0o644); err != nil {
+	if err := paths.AtomicWrite(p.ModelCatalog, catalogData, 0o644); err != nil {
 		return err
 	}
 	normalizedBase := NormalizeProviderBaseURL(baseURL)
-	if err := atomicWrite(p.ProfileConfig, []byte(profileConfigText(p, model, normalizedBase, vanilla)), 0o644); err != nil {
+	if err := paths.AtomicWrite(p.ProfileConfig, []byte(profileConfigText(p, model, normalizedBase, vanilla)), 0o644); err != nil {
 		return err
 	}
 
@@ -598,7 +556,7 @@ func Configure(p paths.Paths, model string, models []copilot.Model, baseURL stri
 		return err
 	}
 	text := patchProviderConfig(string(latestData), p, model, normalizedBase, vanilla)
-	return atomicWrite(p.CodexConfig, []byte(text), 0o644)
+	return paths.AtomicWrite(p.CodexConfig, []byte(text), 0o644)
 }
 
 func Restore(p paths.Paths) (bool, error) {
@@ -639,10 +597,10 @@ func Restore(p paths.Paths) (bool, error) {
 	}
 	text = removeSection(text, "[profiles."+ProfileName+"]")
 	text = removeSection(text, "[model_providers."+ProviderName+"]")
-	if err := backupFile(p.CodexConfig, p.BackupDir); err != nil {
+	if err := paths.BackupFile(p.CodexConfig, p.BackupDir); err != nil {
 		return false, err
 	}
-	if err := atomicWrite(p.CodexConfig, []byte(text), 0o644); err != nil {
+	if err := paths.AtomicWrite(p.CodexConfig, []byte(text), 0o644); err != nil {
 		return false, err
 	}
 	_ = os.Remove(p.ModelCatalog)

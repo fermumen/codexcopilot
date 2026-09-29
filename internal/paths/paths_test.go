@@ -1,6 +1,7 @@
 package paths
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -51,5 +52,65 @@ func TestDefaultFallsBackToHomeDotCodex(t *testing.T) {
 	p := Default()
 	if filepath.Base(p.CodexDir) != ".codex" {
 		t.Fatalf("CodexDir = %q, want a ~/.codex path", p.CodexDir)
+	}
+}
+
+func TestDefaultUsesClaudeConfigDirEnv(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, ".config"))
+	claudeDir := filepath.Join(root, "custom-claude")
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
+
+	p := Default()
+	if p.ClaudeDir != claudeDir {
+		t.Fatalf("ClaudeDir = %q, want %q", p.ClaudeDir, claudeDir)
+	}
+	if want := filepath.Join(claudeDir, ClaudeSettingsFile); p.ClaudeSettings != want {
+		t.Fatalf("ClaudeSettings = %q, want %q", p.ClaudeSettings, want)
+	}
+	if filepath.Dir(p.ClaudeRestoreFile) == p.StateDir || filepath.Dir(p.ClaudeRestoreFile) == filepath.Dir(p.RestoreFile) {
+		t.Fatalf("ClaudeRestoreFile = %q, want Claude-scoped state separate from Codex state", p.ClaudeRestoreFile)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(root, "other-claude"))
+	if other := Default(); other.ClaudeRestoreFile == p.ClaudeRestoreFile {
+		t.Fatalf("ClaudeRestoreFile should differ by CLAUDE_CONFIG_DIR, got %q", p.ClaudeRestoreFile)
+	}
+}
+
+func TestDefaultFallsBackToHomeDotClaude(t *testing.T) {
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	p := Default()
+	if filepath.Base(p.ClaudeDir) != ".claude" {
+		t.Fatalf("ClaudeDir = %q, want a ~/.claude path", p.ClaudeDir)
+	}
+}
+
+func TestDefaultResolvesRelativeClaudeConfigDir(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, ".config"))
+	t.Setenv("CLAUDE_CONFIG_DIR", "claude-rel")
+	for _, dir := range []string{"a", "b"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+	if err := os.Chdir(filepath.Join(root, "a")); err != nil {
+		t.Fatal(err)
+	}
+	a := Default()
+	if err := os.Chdir(filepath.Join(root, "b")); err != nil {
+		t.Fatal(err)
+	}
+	b := Default()
+	if !filepath.IsAbs(a.ClaudeDir) {
+		t.Fatalf("expected absolute Claude dir, got %q", a.ClaudeDir)
+	}
+	if a.ClaudeRestoreFile == b.ClaudeRestoreFile {
+		t.Fatalf("relative dirs from different working directories must not share restore state")
 	}
 }

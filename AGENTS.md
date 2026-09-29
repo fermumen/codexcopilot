@@ -3,7 +3,7 @@
 ## Repo Shape
 - Go 1.22 module `github.com/fermumen/codexcopilot`; intentionally stdlib-only with no `go.sum`, so do not add dependencies casually.
 - CLI entrypoint is `cmd/codexcopilot/main.go`; `./codexcopilot` is a wrapper that runs `bin/codexcopilot` if present, otherwise `go run ./cmd/codexcopilot`.
-- Package boundaries: `internal/auth` GitHub device OAuth and token storage, `internal/copilot` API/model/header logic, `internal/catalog` Codex model catalog JSON, `internal/codex` Codex config/restore/app launch, `internal/proxy` local Copilot API proxy, `internal/paths` platform config paths.
+- Package boundaries: `internal/auth` GitHub device OAuth and token storage, `internal/copilot` API/model/header logic, `internal/catalog` Codex model catalog JSON, `internal/codex` Codex config/restore/app launch, `internal/proxy` local Copilot API proxy, `internal/claudecode` Claude Code settings.json patch/restore, `internal/paths` platform config paths and atomic write/backup helpers.
 
 ## Commands
 - Full verification: `go test ./...`
@@ -13,6 +13,7 @@
 
 ## Runtime Gotchas
 - Commands that configure Codex write real user files: `~/.codex/config.toml`, `~/.codex/codexcopilot-codex-app.config.toml`, `~/.codex/codexcopilot-models.json`, plus state under `<config-home>/codexcopilot/`. The Codex dir honors `CODEX_HOME` (used as the directory itself, like Codex CLI), falling back to `~/.codex`. In tests or manual experiments, set temp `HOME`, `CODEX_HOME`, and `XDG_CONFIG_HOME`.
+- `--claude-code` (on `responses-server`, `install-server-service`, `launch`) and `claude-code patch` write Claude Code's `settings.json` under `CLAUDE_CONFIG_DIR` or `~/.claude`; set a temp `CLAUDE_CONFIG_DIR` too when experimenting. Only managed `env` keys, `model`, `modelPicker`, and `apiKeyHelper` change; `internal/claudecode` keeps key order and raw values of everything else, and the first patch's values win in restore state.
 - Current Codex uses profile-v2 files plus `codex --profile codexcopilot-codex-app`; do not reintroduce legacy root `profile = "..."` settings.
 - Provider config must keep `wire_api = "responses"` and a base URL normalized to end in `/v1/`; the default local proxy is `http://127.0.0.1:11435/v1/`.
 - The proxy maps `/v1/models` to Copilot `/models` and `/v1/responses` to `/responses`, but preserves `/v1/messages` and `/v1/messages/count_tokens` for Copilot's native Anthropic Messages shim. It owns Copilot auth/initiator headers and strips incoming `Authorization`, `X-Api-Key`, and `X-Initiator`.

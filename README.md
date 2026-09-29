@@ -287,6 +287,45 @@ Restore previous Codex provider settings manually:
 ./bin/codexcopilot provider restore
 ```
 
+## Claude Code
+
+The proxy also serves Copilot's Claude models on the native Anthropic Messages API, so Claude Code can use them. Patching Claude Code is opt-in with `--claude-code`:
+
+```bash
+codexcopilot responses-server --claude-code
+codexcopilot install-server-service --claude-code
+codexcopilot launch codex-app --claude-code
+```
+
+While the proxy runs, Claude Code's user `settings.json` points at it. On exit the previous values come back, so an existing setup (for example Azure Foundry) returns automatically. Switching is manual: there is no runtime failover between providers.
+
+Standalone patch and restore against an already-running proxy:
+
+```bash
+codexcopilot claude-code patch
+codexcopilot claude-code patch --base-url http://SERVER:11435/v1/ --claude-model sonnet
+codexcopilot claude-code restore
+```
+
+The settings file is `~/.claude/settings.json`, or `$CLAUDE_CONFIG_DIR/settings.json` when set. `install-server-service --claude-code` stores `CLAUDE_CONFIG_DIR` in the unit when it is set.
+
+Only these keys are changed; everything else, including other `env` entries, hooks, permissions, and key order, is preserved:
+
+| Key | While patched |
+| --- | --- |
+| `env.ANTHROPIC_BASE_URL` | proxy URL without `/v1`, for example `http://127.0.0.1:11435` |
+| `env.ANTHROPIC_AUTH_TOKEN` | `codexcopilot` placeholder; the proxy strips it and uses the saved GitHub token |
+| `env.ANTHROPIC_DEFAULT_{OPUS,FABLE,SONNET,HAIKU}_MODEL` | newest Copilot Claude model per family, or removed when Copilot has none |
+| `env.ANTHROPIC_API_KEY`, `ANTHROPIC_CUSTOM_HEADERS`, `ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL` | removed, so another provider's model ids or credentials are not sent to Copilot |
+| `env.CLAUDE_CODE_USE_{BEDROCK,VERTEX,FOUNDRY,ANTHROPIC_AWS,ANTHROPIC_GOOGLE_CLOUD,MANTLE,GATEWAY}` | removed, so Claude Code does not pick another provider over `ANTHROPIC_BASE_URL` |
+| `model` | `opus` (falling back to `sonnet`), or `--claude-model` |
+| `modelPicker` | one option per Copilot slot, replacing built-in options |
+| `apiKeyHelper` | removed |
+
+Slots come from picker-visible, policy-enabled Copilot models that advertise `/v1/messages` and have ids like `claude-opus-4.8` or `claude-sonnet-5`. `--claude-model` accepts a slot alias (`opus`, `fable`, `sonnet`, `haiku`) or a Copilot Claude model id.
+
+The first patch saves the original values; later patches (for example a service restart after a crash) keep them. Claude Code reads settings at startup, so restart open sessions after patching or restoring. Claude Code features that rely on `anthropic-beta` flags the proxy filters out, or on context windows larger than Copilot serves, may not work.
+
 ## Direct Azure OpenAI Fallback (Entra ID)
 
 Codex can call Azure OpenAI directly and obtain renewable bearer tokens from
@@ -482,6 +521,14 @@ The tool writes:
 <config-home>/codexcopilot/codex-<hash>/backup/
 ```
 
+With `--claude-code` or `claude-code patch` it also writes:
+
+```text
+~/.claude/settings.json
+<config-home>/codexcopilot/claude-<hash>/claude-code-restore.json
+<config-home>/codexcopilot/claude-<hash>/backup/
+```
+
 `<config-home>` is:
 
 - Linux: `$XDG_CONFIG_HOME` or `~/.config`
@@ -528,6 +575,14 @@ Restore command:
 ```
 
 Restore puts those root values back, removes this tool's owned provider section and generated profile-v2 file, deletes the generated model catalog, and removes restore state.
+
+Claude Code settings are restored separately, on managed-server exit or with:
+
+```bash
+./bin/codexcopilot claude-code restore
+```
+
+That puts back the managed keys listed in [Claude Code](#claude-code), in their original positions, and deletes `settings.json` if codexcopilot created it and nothing else was added.
 
 ## Proxy Behavior
 

@@ -16,6 +16,7 @@ import (
 	"syscall"
 
 	"github.com/fermumen/codexcopilot/internal/auth"
+	"github.com/fermumen/codexcopilot/internal/claudecode"
 	"github.com/fermumen/codexcopilot/internal/codex"
 	"github.com/fermumen/codexcopilot/internal/copilot"
 	"github.com/fermumen/codexcopilot/internal/paths"
@@ -28,10 +29,25 @@ const (
 	defaultBaseURL   = "http://127.0.0.1:11435/v1/"
 	serviceName      = "codexcopilot.service"
 	vanillaFlagUsage = "strip Codex extras (Codex Apps connectors, plugins, bundled skills, web search, workspace dependencies)"
+	claudeCodeUsage  = "also point Claude Code settings.json at the proxy while it runs, restoring on exit"
+	claudeModelUsage = "Claude Code default model: a slot alias (opus, sonnet, haiku, fable) or a Copilot Claude model id"
 )
 
+// claudeOptions controls the opt-in Claude Code settings patch.
+type claudeOptions struct {
+	enabled bool
+	model   string
+}
+
+func addClaudeFlags(fs *flag.FlagSet) *claudeOptions {
+	opts := &claudeOptions{}
+	fs.BoolVar(&opts.enabled, "claude-code", false, claudeCodeUsage)
+	fs.StringVar(&opts.model, "claude-model", "", claudeModelUsage)
+	return opts
+}
+
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: codexcopilot <auth|models|provider|responses-server|install-server-service|codex|launch> ...")
+	fmt.Fprintln(os.Stderr, "usage: codexcopilot <auth|models|provider|claude-code|responses-server|install-server-service|codex|launch> ...")
 	os.Exit(2)
 }
 
@@ -145,6 +161,7 @@ func commandServe(args []string) error {
 	clientID := fs.String("client-id", "", "GitHub OAuth client id")
 	enterpriseURL := fs.String("enterprise-url", "", "GitHub Enterprise URL or domain")
 	vanilla := fs.Bool("vanilla", false, vanillaFlagUsage)
+	claude := addClaudeFlags(fs)
 	_ = fs.Parse(args)
 	p := paths.Default()
 	a, err := ensureAuth(p, *clientID, *enterpriseURL)
@@ -155,7 +172,7 @@ func commandServe(args []string) error {
 	if err != nil {
 		return err
 	}
-	return runManagedAPIProxy(p, a, remoteModels, *model, *host, *port, *vanilla)
+	return runManagedAPIProxy(p, a, remoteModels, *model, *host, *port, *vanilla, *claude)
 }
 
 func systemdQuote(arg string) string {
@@ -165,7 +182,7 @@ func systemdQuote(arg string) string {
 	return `"` + arg + `"`
 }
 
-func serverServiceUnit(binaryPath, host string, port int, model string, codexHome string, vanilla bool) string {
+func serverServiceUnit(binaryPath, host string, port int, model string, codexHome string, vanilla bool, claude claudeOptions, claudeConfigDir string) string {
 	args := []string{
 		systemdQuote(binaryPath),
 		"responses-server",
@@ -180,6 +197,12 @@ func serverServiceUnit(binaryPath, host string, port int, model string, codexHom
 	if vanilla {
 		args = append(args, "--vanilla")
 	}
+	if claude.enabled {
+		args = append(args, "--claude-code")
+		if claude.model != "" {
+			args = append(args, "--claude-model", systemdQuote(claude.model))
+		}
+	}
 	lines := []string{
 		"[Unit]",
 		"Description=codexcopilot API proxy",
@@ -190,6 +213,9 @@ func serverServiceUnit(binaryPath, host string, port int, model string, codexHom
 	}
 	if codexHome != "" {
 		lines = append(lines, "Environment="+systemdQuote("CODEX_HOME="+codexHome))
+	}
+	if claude.enabled && claudeConfigDir != "" {
+		lines = append(lines, "Environment="+systemdQuote("CLAUDE_CONFIG_DIR="+claudeConfigDir))
 	}
 	lines = append(lines,
 		"ExecStart="+strings.Join(args, " "),
@@ -203,6 +229,19 @@ func serverServiceUnit(binaryPath, host string, port int, model string, codexHom
 	return strings.Join(lines, "\n")
 }
 
+// envDir returns the directory as an absolute path when the env var is set, so
+// the unit does not persist a relative path that systemd would resolve
+// against a different working directory.
+func envDir(name string, resolved string) string {
+	if os.Getenv(name) == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(resolved); err == nil {
+		return abs
+	}
+	return resolved
+}
+
 func commandInstallServerService(args []string) error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("install-server-service is only supported on Linux systems with systemd")
@@ -213,6 +252,7 @@ func commandInstallServerService(args []string) error {
 	port := fs.Int("port", defaultPort, "listen port")
 	binaryPath := fs.String("binary", "", "codexcopilot executable path")
 	vanilla := fs.Bool("vanilla", false, vanillaFlagUsage)
+	claude := addClaudeFlags(fs)
 	_ = fs.Parse(args)
 	if *host == "" {
 		return fmt.Errorf("--host cannot be empty")
@@ -244,7 +284,7 @@ func commandInstallServerService(args []string) error {
 	if err := os.MkdirAll(serviceDir, 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(servicePath, []byte(serverServiceUnit(exe, *host, *port, *model, os.Getenv("CODEX_HOME"), *vanilla)), 0o644); err != nil {
+	if err := os.WriteFile(servicePath, []byte(serverServiceUnit(exe, *host, *port, *model, envDir("CODEX_HOME", p.CodexDir), *vanilla, *claude, envDir("CLAUDE_CONFIG_DIR", p.ClaudeDir))), 0o644); err != nil {
 		return err
 	}
 	if out, err := runExternalCommand("systemctl", "--user", "daemon-reload"); err != nil {
@@ -288,6 +328,7 @@ func splitLaunchArgs(args []string) ([]string, []string) {
 		"port":           true,
 		"client-id":      true,
 		"enterprise-url": true,
+		"claude-model":   true,
 	}
 	var flagArgs []string
 	var targetArgs []string
@@ -354,6 +395,25 @@ func restoreProvider(p paths.Paths) {
 	}
 }
 
+// configureClaudeCode patches Claude Code settings when opted in and returns
+// a restore func. Failures only warn so the Codex proxy keeps serving.
+func configureClaudeCode(p paths.Paths, opts claudeOptions, baseURL string, remoteModels []copilot.Model) func() {
+	if !opts.enabled {
+		return func() {}
+	}
+	selected, err := claudecode.Configure(p, remoteModels, baseURL, opts.model)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: failed to patch Claude Code settings: %v\n", err)
+		return func() {}
+	}
+	fmt.Printf("Patched Claude Code settings for %q at %s.\n", selected, p.ClaudeSettings)
+	return func() {
+		if _, err := claudecode.Restore(p); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to restore Claude Code settings: %v\n", err)
+		}
+	}
+}
+
 var waitForServerShutdown = waitForServer
 
 func waitForServer(server *http.Server, errs <-chan error) error {
@@ -378,7 +438,7 @@ func waitForServer(server *http.Server, errs <-chan error) error {
 	}
 }
 
-func runManagedAPIProxy(p paths.Paths, a auth.Auth, remoteModels []copilot.Model, requestedModel string, host string, port int, vanilla bool) error {
+func runManagedAPIProxy(p paths.Paths, a auth.Auth, remoteModels []copilot.Model, requestedModel string, host string, port int, vanilla bool, claude claudeOptions) error {
 	server, errs, baseURL, err := startProxy(a, host, port)
 	if err != nil {
 		return err
@@ -389,6 +449,8 @@ func runManagedAPIProxy(p paths.Paths, a auth.Auth, remoteModels []copilot.Model
 		return err
 	}
 	defer restoreProvider(p)
+	restoreClaude := configureClaudeCode(p, claude, baseURL, remoteModels)
+	defer restoreClaude()
 	fmt.Printf("GitHub Copilot API proxy listening on %s/v1/\n", baseURL)
 	fmt.Printf("Patched Codex default provider for %q.\n", selected)
 	fmt.Println("Leave this process running while Codex uses GitHub Copilot. Config will be restored on exit.")
@@ -483,6 +545,44 @@ func commandProvider(args []string) error {
 	return nil
 }
 
+func commandClaudeCode(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("claude-code requires patch or restore")
+	}
+	p := paths.Default()
+	switch args[0] {
+	case "patch":
+		fs := flag.NewFlagSet("claude-code patch", flag.ExitOnError)
+		baseURL := fs.String("base-url", defaultBaseURL, "codexcopilot proxy base URL")
+		model := fs.String("claude-model", "", claudeModelUsage)
+		_ = fs.Parse(args[1:])
+		normalizedBase := codex.NormalizeProviderBaseURL(*baseURL)
+		remoteModels, err := copilot.FetchModelsFromBaseURL(normalizedBase)
+		if err != nil {
+			return err
+		}
+		selected, err := claudecode.Configure(p, remoteModels, normalizedBase, *model)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("Patched Claude Code settings for %q at %s.\n", selected, p.ClaudeSettings)
+		fmt.Printf("ANTHROPIC_BASE_URL: %s\n", claudecode.NormalizeBaseURL(normalizedBase))
+	case "restore":
+		restored, err := claudecode.Restore(p)
+		if err != nil {
+			return err
+		}
+		if restored {
+			fmt.Println("Restored Claude Code settings.")
+		} else {
+			fmt.Println("No Claude Code restore state found.")
+		}
+	default:
+		return fmt.Errorf("unknown claude-code command %q", args[0])
+	}
+	return nil
+}
+
 func commandLaunch(args []string) error {
 	if err := rejectOldLaunchFlags(args); err != nil {
 		return err
@@ -494,6 +594,7 @@ func commandLaunch(args []string) error {
 	clientID := fs.String("client-id", "", "GitHub OAuth client id")
 	enterpriseURL := fs.String("enterprise-url", "", "GitHub Enterprise URL or domain")
 	vanilla := fs.Bool("vanilla", false, vanillaFlagUsage)
+	claude := addClaudeFlags(fs)
 	flagArgs, targetArgs := splitLaunchArgs(args)
 	_ = fs.Parse(flagArgs)
 	target := strings.ToLower(strings.Join(targetArgs, "-"))
@@ -519,6 +620,8 @@ func commandLaunch(args []string) error {
 		return err
 	}
 	defer restoreProvider(p)
+	restoreClaude := configureClaudeCode(p, *claude, baseURL, remoteModels)
+	defer restoreClaude()
 	fmt.Printf("Configured Codex App profile %q at %s.\n", selected, p.CodexConfig)
 	fmt.Printf("GitHub Copilot API proxy listening on %s/v1/\n", baseURL)
 	if err := codex.LaunchApp(); err != nil {
@@ -559,6 +662,8 @@ func main() {
 		err = commandCodex(os.Args[2:])
 	case "provider":
 		err = commandProvider(os.Args[2:])
+	case "claude-code":
+		err = commandClaudeCode(os.Args[2:])
 	case "launch":
 		err = commandLaunch(os.Args[2:])
 	case "-h", "--help", "help":

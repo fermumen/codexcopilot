@@ -27,6 +27,11 @@ func testCommandPaths(root string) paths.Paths {
 		AuthFile:      filepath.Join(stateDir, "auth.json"),
 		RestoreFile:   filepath.Join(stateDir, "codex-app-restore.json"),
 		BackupDir:     filepath.Join(stateDir, "backup"),
+
+		ClaudeDir:         filepath.Join(root, ".claude"),
+		ClaudeSettings:    filepath.Join(root, ".claude", "settings.json"),
+		ClaudeRestoreFile: filepath.Join(stateDir, "claude-code-restore.json"),
+		ClaudeBackupDir:   filepath.Join(stateDir, "claude-backup"),
 	}
 }
 
@@ -152,7 +157,7 @@ func TestManagedAPIProxyPatchesAndRestores(t *testing.T) {
 	})
 
 	models := []copilot.Model{{"id": "gpt-5.4", "supported_endpoints": []any{"/v1/responses"}, "model_picker_enabled": true}}
-	if err := runManagedAPIProxy(p, auth.Auth{AccessToken: "test-token"}, models, "gpt-5.4", "127.0.0.1", 0, true); err != nil {
+	if err := runManagedAPIProxy(p, auth.Auth{AccessToken: "test-token"}, models, "gpt-5.4", "127.0.0.1", 0, true, claudeOptions{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -170,10 +175,61 @@ func TestManagedAPIProxyPatchesAndRestores(t *testing.T) {
 	if _, err := os.Stat(p.ProfileConfig); !os.IsNotExist(err) {
 		t.Fatalf("expected profile config to be removed, got %v", err)
 	}
+	if _, err := os.Stat(p.ClaudeSettings); !os.IsNotExist(err) {
+		t.Fatalf("Claude Code settings should be untouched without --claude-code, got %v", err)
+	}
+}
+
+func TestManagedAPIProxyPatchesAndRestoresClaudeCode(t *testing.T) {
+	root := t.TempDir()
+	p := testCommandPaths(root)
+	original := "{\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"https://example.azure.com/anthropic/\"\n  },\n  \"model\": \"opus\"\n}\n"
+	if err := os.MkdirAll(p.ClaudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p.ClaudeSettings, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	previousWait := waitForServerShutdown
+	waitForServerShutdown = func(server *http.Server, errs <-chan error) error {
+		data, err := os.ReadFile(p.ClaudeSettings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		if !strings.Contains(text, `"ANTHROPIC_BASE_URL": "http://127.0.0.1:`) || !strings.Contains(text, `"ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5"`) {
+			t.Fatalf("Claude Code settings were not patched while server was running:\n%s", text)
+		}
+		_ = server.Close()
+		err = <-errs
+		if err == http.ErrServerClosed {
+			return nil
+		}
+		return err
+	}
+	t.Cleanup(func() {
+		waitForServerShutdown = previousWait
+	})
+
+	models := []copilot.Model{
+		{"id": "gpt-5.4", "supported_endpoints": []any{"/v1/responses"}, "model_picker_enabled": true},
+		{"id": "claude-sonnet-5", "name": "Claude Sonnet 5", "supported_endpoints": []any{"/v1/messages"}, "model_picker_enabled": true},
+	}
+	if err := runManagedAPIProxy(p, auth.Auth{AccessToken: "test-token"}, models, "gpt-5.4", "127.0.0.1", 0, false, claudeOptions{enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(p.ClaudeSettings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != original {
+		t.Fatalf("Claude Code settings were not restored:\n%s", data)
+	}
 }
 
 func TestServerServiceUnit(t *testing.T) {
-	unit := serverServiceUnit(`/opt/codex copilot/codex%copilot`, "0.0.0.0", 11435, "", "", false)
+	unit := serverServiceUnit(`/opt/codex copilot/codex%copilot`, "0.0.0.0", 11435, "", "", false, claudeOptions{}, "/tmp/claude")
 	want := `ExecStart="/opt/codex copilot/codex%%copilot" responses-server --host "0.0.0.0" --port 11435`
 	if !strings.Contains(unit, want) {
 		t.Fatalf("unit missing ExecStart:\n%s", unit)
@@ -181,10 +237,13 @@ func TestServerServiceUnit(t *testing.T) {
 	if strings.Contains(unit, "--vanilla") {
 		t.Fatalf("default unit should not add a vanilla flag:\n%s", unit)
 	}
+	if strings.Contains(unit, "--claude-code") || strings.Contains(unit, "CLAUDE_CONFIG_DIR") {
+		t.Fatalf("default unit should not opt into Claude Code patching:\n%s", unit)
+	}
 	if !strings.Contains(unit, "Restart=on-failure") {
 		t.Fatalf("unit missing restart policy:\n%s", unit)
 	}
-	withModel := serverServiceUnit(`/usr/local/bin/codexcopilot`, "127.0.0.1", 11435, "gpt-5.4", "/mnt/c/Users/FernandoMendez/.codex", true)
+	withModel := serverServiceUnit(`/usr/local/bin/codexcopilot`, "127.0.0.1", 11435, "gpt-5.4", "/mnt/c/Users/FernandoMendez/.codex", true, claudeOptions{enabled: true, model: "sonnet"}, "/home/user/.claude-alt")
 	if !strings.Contains(withModel, `--model "gpt-5.4"`) {
 		t.Fatalf("unit missing model flag:\n%s", withModel)
 	}
@@ -193,6 +252,12 @@ func TestServerServiceUnit(t *testing.T) {
 	}
 	if !strings.Contains(withModel, `Environment="CODEX_HOME=/mnt/c/Users/FernandoMendez/.codex"`) {
 		t.Fatalf("unit missing CODEX_HOME environment:\n%s", withModel)
+	}
+	if !strings.Contains(withModel, `--vanilla --claude-code --claude-model "sonnet"`) {
+		t.Fatalf("unit missing Claude Code flags:\n%s", withModel)
+	}
+	if !strings.Contains(withModel, `Environment="CLAUDE_CONFIG_DIR=/home/user/.claude-alt"`) {
+		t.Fatalf("unit missing CLAUDE_CONFIG_DIR environment:\n%s", withModel)
 	}
 }
 
